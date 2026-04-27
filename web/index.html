@@ -1,0 +1,1799 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>AuraDB</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #667085;
+      --border: #d6dde6;
+      --accent: #087568;
+      --accent-strong: #065f55;
+      --soft: #edf7f5;
+      --danger: #b42318;
+      --danger-soft: #fff3f1;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.5;
+    }
+
+    button,
+    input,
+    textarea {
+      width: 100%;
+      border-radius: 8px;
+      font: inherit;
+    }
+
+    input,
+    textarea {
+      border: 1px solid var(--border);
+      background: #ffffff;
+      color: var(--text);
+      padding: 12px;
+    }
+
+    input:focus,
+    textarea:focus {
+      outline: none;
+      box-shadow: none;
+      border-color: var(--border);
+    }
+
+    textarea {
+      min-height: 170px;
+      resize: vertical;
+      line-height: 1.5;
+    }
+
+    button {
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #ffffff;
+      cursor: pointer;
+      font-weight: 700;
+      padding: 11px 12px;
+    }
+
+    button:hover {
+      background: var(--accent-strong);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+    }
+
+    h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .login-shell {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .login-card {
+      width: min(420px, 100%);
+      padding: 24px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+    }
+
+    .login-card h1 {
+      margin-bottom: 8px;
+    }
+
+    .login-card p {
+      margin: 0 0 18px;
+      color: var(--muted);
+    }
+
+    .login-card input {
+      margin-bottom: 10px;
+    }
+
+    .app {
+      width: min(1320px, calc(100% - 32px));
+      margin: 26px auto 46px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+
+    .topbar-actions {
+      position: relative;
+      width: auto;
+      flex: 0 0 auto;
+    }
+
+    .menu-button {
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      border-color: var(--border);
+      background: #ffffff;
+      color: var(--text);
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .menu-button:hover {
+      background: #f1f5f9;
+    }
+
+    .session-menu {
+      position: absolute;
+      top: 44px;
+      right: 0;
+      z-index: 20;
+      width: 180px;
+      padding: 6px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 12px 30px rgba(16, 24, 40, 0.12);
+    }
+
+    .session-menu button {
+      margin: 0;
+      text-align: left;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+
+    .session-menu button:hover {
+      background: #f4f7f7;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 22px;
+      align-items: start;
+      transition: grid-template-columns 180ms ease;
+    }
+
+    .workspace.history-open {
+      grid-template-columns: minmax(0, 1fr) 360px;
+    }
+
+    .main-panel,
+    .history-panel {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: var(--panel);
+      box-shadow: 0 16px 34px rgba(15, 23, 42, 0.06);
+    }
+
+    .main-panel {
+      min-width: 0;
+      padding: 24px;
+    }
+
+    .history-panel {
+      min-width: 0;
+      padding: 16px;
+      max-height: calc(100vh - 130px);
+      overflow: auto;
+      transition: opacity 180ms ease, transform 180ms ease;
+    }
+
+    .history-panel.hidden-desktop {
+      opacity: 0;
+      transform: translateX(12px);
+      pointer-events: none;
+    }
+
+    .panel-intro {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .quick-actions {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin: 18px 0 14px;
+    }
+
+    .quick-action {
+      padding: 14px 12px;
+      border: 1px solid #cfe2dd;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #fbfffe 0%, #f3faf8 100%);
+      color: var(--text);
+      text-align: left;
+      box-shadow: 0 10px 24px rgba(8, 117, 104, 0.06);
+    }
+
+    .quick-action:hover {
+      background: linear-gradient(180deg, #f4fbf9 0%, #eaf6f3 100%);
+      border-color: #aacfc6;
+    }
+
+    .quick-action strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 15px;
+    }
+
+    .quick-action span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .secondary-button {
+      border-color: var(--border);
+      background: #ffffff;
+      color: var(--text);
+    }
+
+    .secondary-button:hover {
+      background: #f1f5f9;
+    }
+
+    .compact-button {
+      width: auto;
+      min-height: 36px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.15;
+    }
+
+    .danger-button {
+      border-color: #f0b8b2;
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .danger-button:hover {
+      background: #fde7e4;
+    }
+
+    .ghost-action {
+      width: auto;
+      padding: 8px 10px;
+      border: 1px solid #d8e3e0;
+      border-radius: 10px;
+      background: #f8fbfb;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .ghost-action:hover {
+      background: #eef5f4;
+    }
+
+    .ghost-action.danger {
+      color: var(--danger);
+      border-color: #f0d4cf;
+      background: #fff8f7;
+    }
+
+    .ghost-action.danger:hover {
+      background: #fff0ee;
+    }
+
+    .composer {
+      margin-top: 16px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: #ffffff;
+      overflow: hidden;
+      box-shadow: 0 16px 34px rgba(15, 23, 42, 0.06);
+    }
+
+    .composer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 16px 0;
+    }
+
+    .composer-label {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .composer-hint {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .composer-badge {
+      width: auto;
+      padding: 6px 10px;
+      border: 1px solid #d7ebe6;
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--accent-strong);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .composer textarea {
+      border: 0;
+      border-radius: 0;
+      display: block;
+      padding: 16px;
+      font-size: 15px;
+    }
+
+    .composer-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px 12px;
+      border-top: 1px solid var(--border);
+      background: #fbfcfd;
+    }
+
+    .example-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 0 16px 16px;
+    }
+
+    .example-chip {
+      width: auto;
+      padding: 8px 12px;
+      border: 1px solid #d4e5e0;
+      border-radius: 999px;
+      background: #f7fbfa;
+      color: #29434e;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .example-chip:hover {
+      background: #edf7f5;
+      border-color: #b7d8cf;
+    }
+
+    .file-area {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      flex-wrap: wrap;
+      flex: 1 1 auto;
+    }
+
+    .file-area button {
+      width: auto;
+      white-space: nowrap;
+    }
+
+    input[type=file] {
+      display: none !important;
+    }
+
+    .file-status {
+      min-width: 180px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .query-action {
+      width: auto;
+      min-width: 108px;
+      flex: 0 0 auto;
+    }
+
+    .status {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .error {
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    .history-panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .history-top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .history-list {
+      margin-top: 12px;
+    }
+
+    .history-card {
+      position: relative;
+      margin-top: 10px;
+      padding: 14px 14px 12px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, #ffffff 0%, #fcfdfd 100%);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+    }
+
+    .history-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .history-question {
+      margin: 0;
+      font-size: 14px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .history-item-menu {
+      position: relative;
+      width: auto;
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .history-favorite {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid #dbe6e2;
+      border-radius: 999px;
+      background: #fbfdfd;
+      color: #9aa8b2;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .history-favorite:hover {
+      background: #f3f8f7;
+    }
+
+    .history-favorite.active {
+      color: #c68b00;
+      border-color: #f1d48a;
+      background: #fff8df;
+    }
+
+    .history-menu-button {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border: 1px solid #d8e3e0;
+      border-radius: 10px;
+      background: #f9fbfb;
+      color: var(--text);
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .history-menu-button:hover {
+      background: #f0f5f4;
+    }
+
+    .history-context-menu {
+      position: absolute;
+      top: 40px;
+      right: 0;
+      z-index: 20;
+      width: 146px;
+      padding: 6px;
+      border: 1px solid #d8e3e0;
+      border-radius: 10px;
+      background: #ffffff;
+      box-shadow: 0 16px 32px rgba(15, 23, 42, 0.14);
+    }
+
+    .history-context-menu button {
+      margin: 0;
+      padding: 7px 9px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.2;
+      text-align: left;
+      color: var(--text);
+    }
+
+    .history-context-menu button:hover {
+      background: #f4f7f7;
+    }
+
+    .history-context-menu .danger-button {
+      color: var(--danger);
+      background: transparent;
+    }
+
+    .history-context-menu .danger-button:hover {
+      background: #fff3f1;
+    }
+
+    .history-meta {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .answer-panel {
+      width: 100%;
+      max-width: none;
+      align-self: stretch;
+      margin-top: 20px;
+      padding: 22px 22px 20px;
+      border: 1px solid #dce6e2;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #ffffff 0%, #fbfdfc 100%);
+      box-shadow: 0 14px 34px rgba(8, 117, 104, 0.08);
+      overflow: auto;
+    }
+
+    .answer-head {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .answer {
+      margin: 0;
+      width: 100%;
+      max-width: none;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 16px;
+      line-height: 1.72;
+      color: #20303c;
+    }
+
+    .answer-title {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .answer-actions {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .answer-action {
+      width: auto;
+      padding: 7px 10px;
+      border: 1px solid #d4e5e0;
+      border-radius: 999px;
+      background: #f7fbfa;
+      color: #29434e;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .answer-action:hover {
+      background: #edf7f5;
+      border-color: #b7d8cf;
+    }
+
+    .answer-feedback {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      min-height: 16px;
+    }
+
+    .loading-inline {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .loading-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .loading-dots span {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #9fc7be;
+      animation: pulseDot 1.1s infinite ease-in-out;
+    }
+
+    .loading-dots span:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+
+    .loading-dots span:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+
+    @keyframes pulseDot {
+      0%, 80%, 100% {
+        transform: scale(0.7);
+        opacity: 0.55;
+      }
+      40% {
+        transform: scale(1);
+        opacity: 1;
+      }
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.42);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      z-index: 1000;
+    }
+
+    .modal-card {
+      width: min(420px, 100%);
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px;
+      box-shadow: 0 20px 48px rgba(15, 23, 42, 0.18);
+    }
+
+    .modal-card p {
+      margin: 0 0 18px;
+      color: var(--text);
+    }
+
+    .modal-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    @media (max-width: 1100px) {
+      .workspace.history-open {
+        grid-template-columns: 1fr 320px;
+      }
+    }
+
+    @media (max-width: 880px) {
+      .quick-actions {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .composer-footer {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .query-action {
+        width: 100%;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .workspace,
+      .workspace.history-open {
+        grid-template-columns: 1fr;
+      }
+
+      .history-panel {
+        position: fixed;
+        top: 84px;
+        right: 16px;
+        left: 16px;
+        max-height: calc(100vh - 110px);
+        z-index: 15;
+      }
+
+      .history-panel.hidden-desktop {
+        display: none;
+      }
+
+    }
+  </style>
+</head>
+<body>
+<section id="loginView" class="login-shell hidden">
+  <div class="login-card">
+    <h1>AuraDB</h1>
+    <p>Ingresa para consultar tus documentos.</p>
+    <input id="loginEmail" type="email" placeholder="Email" autocomplete="email" />
+    <input id="loginPassword" type="password" placeholder="Contraseña" autocomplete="current-password" />
+    <button onclick="login()">Ingresar</button>
+    <div id="loginResult" class="status"></div>
+  </div>
+</section>
+
+<main id="appView" class="app hidden">
+  <header class="topbar">
+    <h1>AuraDB</h1>
+    <div class="topbar-actions">
+      <button type="button" class="menu-button" onclick="toggleSessionMenu()" aria-label="Menú">⋯</button>
+      <div id="sessionMenu" class="session-menu hidden">
+        <button type="button" onclick="toggleHistoryPanel()">Historial</button>
+        <button type="button" onclick="logout()">Cerrar sesión</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="workspace" class="workspace">
+    <section class="main-panel" id="queryPanel">
+      <h2>Consulta tu documento</h2>
+      <p class="panel-intro">Sube un archivo y consulta con acciones rápidas o preguntas libres.</p>
+
+      <div class="quick-actions">
+        <button type="button" class="quick-action" onclick="setQuickQuestion('summary')">
+          <strong>Resumen</strong>
+          <span>Obtén una vista breve del documento.</span>
+        </button>
+        <button type="button" class="quick-action" onclick="setQuickQuestion('structure')">
+          <strong>Secciones</strong>
+          <span>Descubre qué contiene el documento.</span>
+        </button>
+        <button type="button" class="quick-action" onclick="setQuickQuestion('keypoints')">
+          <strong>Puntos clave</strong>
+          <span>Extrae lo más importante rápidamente.</span>
+        </button>
+        <button type="button" class="quick-action" onclick="setQuickQuestion('ask')">
+          <strong>Preguntar al documento</strong>
+          <span>Escribe una duda puntual y consulta.</span>
+        </button>
+      </div>
+
+      <div class="composer">
+        <div class="composer-head">
+          <div>
+            <p class="composer-label">Escribe tu consulta</p>
+            <p class="composer-hint">La consulta siempre se ejecuta sobre el documento actual.</p>
+          </div>
+          
+        </div>
+        <textarea id="askQuery" placeholder="Escribe lo que quieres saber"></textarea>
+        <!-- <div class="example-row">
+          <button type="button" class="example-chip" onclick="applyExampleQuestion('¿Qué contiene el documento?')">¿Qué contiene el documento?</button>
+          <button type="button" class="example-chip" onclick="applyExampleQuestion('Resume este documento')">Resume este documento</button>
+        </div> -->
+        <div class="composer-footer">
+          <div class="file-area">
+            <input type="file" id="file" style="display:none" />
+            <button type="button" id="uploadButton" class="secondary-button compact-button">Subir documento</button>
+            <button type="button" id="clearButton" class="secondary-button compact-button">Limpiar</button>
+            <span id="currentDocumentName" class="file-status">Sin documento cargado</span>
+            <div id="uploadResult" class="status"></div>
+          </div>
+          <button class="query-action compact-button" onclick="askDocument()">Consultar</button>
+        </div>
+      </div>
+
+      <div id="askResult"></div>
+    </section>
+
+    <aside id="historyPanel" class="history-panel hidden-desktop">
+      <div class="history-panel-head">
+        <h3>Historial</h3>
+        <div class="history-top-actions">
+          <button type="button" class="ghost-action danger" onclick="requestClearHistory()">Vaciar historial</button>
+          <button type="button" class="ghost-action" onclick="loadAskHistory()">Actualizar</button>
+        </div>
+      </div>
+      <div id="historyResult" class="history-list"></div>
+    </aside>
+  </div>
+</main>
+
+<div id="confirmModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirmModalText">
+  <div class="modal-card">
+    <p id="confirmModalText">¿Seguro que quieres eliminar esta pregunta del historial?</p>
+    <div class="modal-actions">
+      <button type="button" class="secondary-button" onclick="closeConfirmModal()">Cancelar</button>
+      <button type="button" class="danger-button" onclick="confirmDeleteHistory()">Eliminar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = "http://localhost:8080";
+const AUTH_TOKEN_KEY = "auradb.authToken";
+const TENANT_ID = "14168b79-719b-4578-832a-d571bc2da2d5";
+const CURRENT_DOCUMENT_ID_KEY = "auradb.currentDocumentId";
+const CURRENT_DOCUMENT_NAME_KEY = "auradb.currentDocumentName";
+const CURRENT_QUERY_TEXT_KEY = "auradb.currentQueryText";
+const LAST_ANSWER_TEXT_KEY = "auradb.lastAnswerText";
+const HISTORY_FAVORITES_KEY = "auradb.historyFavorites";
+const HISTORY_HIDDEN_IDS_KEY = "auradb.historyHiddenIds";
+const HISTORY_PANEL_OPEN_KEY = "auradb.historyPanelOpen";
+
+let currentDocumentId = "";
+let currentDocumentName = "";
+let pendingDeleteHistoryId = "";
+let openHistoryMenuId = "";
+let answerFeedbackTimeout = null;
+let confirmAction = null;
+let lastHistoryItems = [];
+let historyPanelOpen = false;
+
+function getAuthToken() {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || sessionStorage.getItem(AUTH_TOKEN_KEY) || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+function setAuthToken(token) {
+  try {
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+  } catch (err) {
+    sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+  }
+}
+
+function clearAuthToken() {
+  try {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    sessionStorage.removeItem(AUTH_TOKEN_KEY);
+  } catch (err) {
+    sessionStorage.removeItem(AUTH_TOKEN_KEY);
+  }
+}
+
+function authHeaders() {
+  return {
+    "Authorization": "Bearer " + getAuthToken()
+  };
+}
+
+function showLogin() {
+  document.getElementById('loginView').classList.remove('hidden');
+  document.getElementById('appView').classList.add('hidden');
+  document.getElementById('loginEmail').focus();
+}
+
+function showApp() {
+  document.getElementById('loginView').classList.add('hidden');
+  document.getElementById('appView').classList.remove('hidden');
+  initializeFreshAppState();
+  restoreHistoryPanelState();
+  loadAskHistory();
+}
+
+function toggleSessionMenu() {
+  document.getElementById('sessionMenu').classList.toggle('hidden');
+}
+
+function toggleHistoryPanel() {
+  historyPanelOpen = !historyPanelOpen;
+  persistHistoryPanelState();
+  renderHistoryPanel();
+  document.getElementById('sessionMenu').classList.add('hidden');
+  if (historyPanelOpen) {
+    loadAskHistory();
+  }
+}
+
+function restoreHistoryPanelState() {
+  try {
+    historyPanelOpen = sessionStorage.getItem(HISTORY_PANEL_OPEN_KEY) === "true";
+  } catch (err) {
+    historyPanelOpen = false;
+  }
+  renderHistoryPanel();
+}
+
+function persistHistoryPanelState() {
+  try {
+    sessionStorage.setItem(HISTORY_PANEL_OPEN_KEY, historyPanelOpen ? "true" : "false");
+  } catch (err) {}
+}
+
+function renderHistoryPanel() {
+  const workspace = document.getElementById('workspace');
+  const panel = document.getElementById('historyPanel');
+  workspace.classList.toggle('history-open', historyPanelOpen);
+  panel.classList.toggle('hidden-desktop', !historyPanelOpen);
+}
+
+async function login() {
+  const container = document.getElementById('loginResult');
+  container.innerHTML = "<p>Ingresando...</p>";
+
+  try {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    if (!email || !password) {
+      setMessage(container, "Completa email y contraseña.", "error");
+      return;
+    }
+
+    const res = await fetch(API + "/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenant_id: TENANT_ID,
+        email: email,
+        password: password
+      })
+    });
+
+    if (!res.ok) {
+      setMessage(container, "No se pudo iniciar sesión.", "error");
+      return;
+    }
+
+    const data = await res.json();
+    if (!data.token) {
+      setMessage(container, "No se pudo iniciar sesión.", "error");
+      return;
+    }
+
+    setAuthToken(data.token);
+    container.innerHTML = "";
+    showApp();
+  } catch (err) {
+    setMessage(container, "No se pudo iniciar sesión.", "error");
+  }
+}
+
+function logout() {
+  document.getElementById('sessionMenu').classList.add('hidden');
+  clearAuthToken();
+  clearDocumentState();
+  document.getElementById('askQuery').value = "";
+  document.getElementById('historyResult').innerHTML = "";
+  clearPersistedQueryState();
+  showLogin();
+}
+
+function setMessage(container, message, className) {
+  container.innerHTML = "";
+  const p = document.createElement('p');
+  p.textContent = message;
+  if (className) {
+    p.className = className;
+  }
+  container.appendChild(p);
+}
+
+function setLoadingState(container, message) {
+  container.innerHTML = '<div class="loading-inline"><span>' + message + '</span><span class="loading-dots"><span></span><span></span><span></span></span></div>';
+}
+
+function formatHistoryDate(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
+}
+
+function cleanErrorText(text) {
+  return (text || "").replace(/\s+/g, " ").trim();
+}
+
+function friendlyErrorText(text, fallback) {
+  const cleaned = cleanErrorText(text);
+  if (!cleaned) {
+    return fallback;
+  }
+  if (cleaned.includes("Formato de archivo no soportado")) {
+    return "Formato de archivo no soportado.";
+  }
+  if (cleaned.includes("tamaño máximo")) {
+    return "El archivo supera el tamaño máximo permitido.";
+  }
+  return fallback;
+}
+
+function escapeHtml(text) {
+  return String(text || "").replace(/[&<>\"']/g, function (char) {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case "\"":
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      default:
+        return char;
+    }
+  });
+}
+
+function saveCurrentDocument(documentId, documentName) {
+  currentDocumentId = documentId || "";
+  if (currentDocumentId) {
+    currentDocumentName = documentName || "Documento cargado";
+  } else {
+    currentDocumentName = "";
+  }
+  try {
+    if (currentDocumentId) {
+      sessionStorage.setItem(CURRENT_DOCUMENT_ID_KEY, currentDocumentId);
+      sessionStorage.setItem(CURRENT_DOCUMENT_NAME_KEY, currentDocumentName);
+    } else {
+      sessionStorage.removeItem(CURRENT_DOCUMENT_ID_KEY);
+      sessionStorage.removeItem(CURRENT_DOCUMENT_NAME_KEY);
+    }
+  } catch (err) {}
+}
+
+function restoreCurrentDocumentId() {
+  currentDocumentId = "";
+  currentDocumentName = "";
+  renderCurrentDocumentName();
+}
+
+function initializeFreshAppState() {
+  currentDocumentId = "";
+  currentDocumentName = "";
+
+  const fileInput = document.getElementById("file");
+  if (fileInput) fileInput.value = "";
+
+  const query = document.getElementById("askQuery");
+  if (query) query.value = "";
+
+  const answer = document.getElementById("askResult");
+  if (answer) answer.innerHTML = "";
+
+  clearPersistedDocumentState();
+  clearPersistedQueryState();
+  renderCurrentDocumentName();
+  setUploadMessage("", false);
+}
+
+function clearDocumentState() {
+  saveCurrentDocument("", "");
+  document.getElementById('askResult').innerHTML = "";
+  clearPersistedDocumentState();
+  clearPersistedQueryState();
+  persistLastAnswer("");
+}
+
+function resetUploadDocumentState() {
+  currentDocumentId = "";
+  currentDocumentName = "";
+  saveCurrentDocument("", "");
+  document.getElementById('askResult').innerHTML = "";
+  persistLastAnswer("");
+}
+
+function persistQueryState() {
+  return;
+}
+
+function restoreQueryState() {
+  document.getElementById('askQuery').value = "";
+}
+
+function persistLastAnswer(answerText) {
+  try {
+    if (answerText) {
+      sessionStorage.setItem(LAST_ANSWER_TEXT_KEY, answerText);
+    } else {
+      sessionStorage.removeItem(LAST_ANSWER_TEXT_KEY);
+    }
+  } catch (err) {}
+}
+
+function restoreLastAnswer() {
+  document.getElementById('askResult').innerHTML = "";
+}
+
+function clearPersistedQueryState() {
+  try {
+    sessionStorage.removeItem(CURRENT_QUERY_TEXT_KEY);
+    sessionStorage.removeItem(LAST_ANSWER_TEXT_KEY);
+    localStorage.removeItem(CURRENT_QUERY_TEXT_KEY);
+    localStorage.removeItem(LAST_ANSWER_TEXT_KEY);
+  } catch (err) {}
+}
+
+function clearPersistedDocumentState() {
+  try {
+    sessionStorage.removeItem(CURRENT_DOCUMENT_ID_KEY);
+    sessionStorage.removeItem(CURRENT_DOCUMENT_NAME_KEY);
+    localStorage.removeItem(CURRENT_DOCUMENT_ID_KEY);
+    localStorage.removeItem(CURRENT_DOCUMENT_NAME_KEY);
+  } catch (err) {}
+}
+
+function setQuickQuestion(mode) {
+  const input = document.getElementById('askQuery');
+  if (mode === "summary") {
+    input.value = "Resume este documento";
+  } else if (mode === "structure") {
+    input.value = "¿Qué contiene el documento?";
+  } else if (mode === "keypoints") {
+    input.value = "Extrae los puntos clave del documento";
+  } else {
+    input.value = "";
+  }
+  persistQueryState();
+  input.focus();
+}
+
+function applyExampleQuestion(question) {
+  const input = document.getElementById('askQuery');
+  input.value = question || "";
+  persistQueryState();
+  input.focus();
+}
+
+function showAnswerFeedback(message) {
+  const feedback = document.getElementById('answerFeedback');
+  if (!feedback) {
+    return;
+  }
+  feedback.textContent = message || "";
+  if (answerFeedbackTimeout) {
+    clearTimeout(answerFeedbackTimeout);
+  }
+  if (message) {
+    answerFeedbackTimeout = setTimeout(function () {
+      const currentFeedback = document.getElementById('answerFeedback');
+      if (currentFeedback) {
+        currentFeedback.textContent = "";
+      }
+    }, 2200);
+  }
+}
+
+async function copyAnswer() {
+  const answerText = sessionStorage.getItem(LAST_ANSWER_TEXT_KEY) || "";
+  if (!answerText) {
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(answerText);
+    showAnswerFeedback("Copiado");
+  } catch (err) {
+    showAnswerFeedback("");
+  }
+}
+
+function clearAnswer() {
+  document.getElementById('askResult').innerHTML = "";
+  persistLastAnswer("");
+  showAnswerFeedback("");
+}
+
+function exportAnswer() {
+  const answerText = sessionStorage.getItem(LAST_ANSWER_TEXT_KEY) || "";
+  if (!answerText) {
+    return;
+  }
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0")
+  ].join("") + "-" + [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0")
+  ].join("");
+  const blob = new Blob([answerText], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = "respuesta-" + stamp + ".txt";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function renderAnswer(answer) {
+  const container = document.getElementById('askResult');
+  container.innerHTML = "";
+  if (!answer) {
+    return;
+  }
+
+  const wrapper = document.createElement('div');
+  wrapper.className = "answer-panel";
+
+  const answerHead = document.createElement('div');
+  answerHead.className = "answer-head";
+
+  const answerTitle = document.createElement('h3');
+  answerTitle.className = "answer-title";
+  answerTitle.textContent = "Respuesta";
+  answerHead.appendChild(answerTitle);
+  wrapper.appendChild(answerHead);
+
+  const answerText = document.createElement('p');
+  answerText.className = "answer";
+  answerText.textContent = answer;
+  wrapper.appendChild(answerText);
+
+  const actions = document.createElement('div');
+  actions.className = "answer-actions";
+
+  [
+    ["Copiar respuesta", copyAnswer],
+    ["Limpiar respuesta", clearAnswer],
+    ["Exportar .txt", exportAnswer]
+  ].forEach(function (entry) {
+    const button = document.createElement('button');
+    button.type = "button";
+    button.className = "answer-action";
+    button.textContent = entry[0];
+    button.onclick = entry[1];
+    actions.appendChild(button);
+  });
+
+  wrapper.appendChild(actions);
+
+  const feedback = document.createElement('div');
+  feedback.className = "answer-feedback";
+  feedback.id = "answerFeedback";
+  wrapper.appendChild(feedback);
+
+  container.appendChild(wrapper);
+}
+
+function getFavoriteHistoryIds() {
+  try {
+    return JSON.parse(sessionStorage.getItem(HISTORY_FAVORITES_KEY) || "[]");
+  } catch (err) {
+    return [];
+  }
+}
+
+function setFavoriteHistoryIds(ids) {
+  try {
+    sessionStorage.setItem(HISTORY_FAVORITES_KEY, JSON.stringify(ids));
+  } catch (err) {}
+}
+
+function isHistoryFavorite(id) {
+  return getFavoriteHistoryIds().includes(id);
+}
+
+function toggleHistoryFavorite(id) {
+  if (!id) {
+    return;
+  }
+  const favorites = getFavoriteHistoryIds();
+  const nextFavorites = favorites.includes(id)
+    ? favorites.filter(function (itemId) { return itemId !== id; })
+    : favorites.concat(id);
+  setFavoriteHistoryIds(nextFavorites);
+  renderHistoryList(lastHistoryItems);
+}
+
+function getHiddenHistoryIds() {
+  try {
+    return JSON.parse(sessionStorage.getItem(HISTORY_HIDDEN_IDS_KEY) || "[]");
+  } catch (err) {
+    return [];
+  }
+}
+
+function setHiddenHistoryIds(ids) {
+  try {
+    sessionStorage.setItem(HISTORY_HIDDEN_IDS_KEY, JSON.stringify(ids));
+  } catch (err) {}
+}
+
+function toggleHistoryMenu(id) {
+  openHistoryMenuId = openHistoryMenuId === id ? "" : id;
+  renderHistoryMenus();
+}
+
+function closeHistoryMenu() {
+  if (!openHistoryMenuId) {
+    return;
+  }
+  openHistoryMenuId = "";
+  renderHistoryMenus();
+}
+
+function renderHistoryMenus() {
+  document.querySelectorAll('.history-context-menu').forEach(function (menu) {
+    menu.classList.add('hidden');
+  });
+  if (!openHistoryMenuId) {
+    return;
+  }
+  const activeMenu = document.querySelector('[data-history-menu="' + openHistoryMenuId + '"]');
+  if (activeMenu) {
+    activeMenu.classList.remove('hidden');
+  }
+}
+
+function useHistoryQuestion(question, documentId) {
+  closeHistoryMenu();
+  if (documentId) {
+    saveCurrentDocument(documentId, "Documento del historial");
+  }
+  const input = document.getElementById('askQuery');
+  input.value = question || "";
+  persistQueryState();
+  document.getElementById('queryPanel').scrollIntoView({
+    behavior: "smooth",
+    block: "start"
+  });
+  input.focus();
+}
+
+async function uploadSelectedFile() {
+  const input = document.getElementById("file");
+  const file = input.files && input.files[0];
+
+  if (!file) {
+    setUploadMessage("Selecciona un archivo.", true);
+    return;
+  }
+
+  const token = getAuthToken ? getAuthToken() : localStorage.getItem("token");
+
+  if (!token) {
+    setUploadMessage("No hay sesión activa. Inicia sesión de nuevo.", true);
+    return;
+  }
+
+  try {
+    setUploadMessage("Subiendo documento...", false);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const res = await fetch("http://localhost:8080/documents/upload", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token
+      },
+      body: formData
+    });
+
+    const text = await res.text();
+    console.log("upload response:", res.status, text);
+
+    if (!res.ok) {
+      throw new Error(text || "Upload failed");
+    }
+
+    const match = text.match(/document_id=([0-9a-fA-F-]{36})/);
+
+    if (!match) {
+      throw new Error("No se encontró document_id en la respuesta: " + text);
+    }
+
+    currentDocumentId = match[1];
+    currentDocumentName = file.name;
+
+    sessionStorage.setItem("auradb.currentDocumentId", currentDocumentId);
+    sessionStorage.setItem("auradb.currentDocumentName", currentDocumentName);
+
+    renderCurrentDocumentName();
+    setUploadMessage("Documento cargado. Ya puedes consultarlo.", false);
+
+  } catch (err) {
+    console.error("upload error:", err);
+    setUploadMessage("No se pudo subir el documento: " + err.message, true);
+  }
+}
+
+function clearDocument() {
+  currentDocumentId = "";
+  currentDocumentName = "";
+  const fileInput = document.getElementById("file");
+  if (fileInput) fileInput.value = "";
+
+  const query = document.getElementById("askQuery");
+  if (query) query.value = "";
+
+  clearPersistedDocumentState();
+  clearPersistedQueryState();
+
+  renderCurrentDocumentName();
+  setUploadMessage("Sin documento cargado.", false);
+
+  const answer = document.getElementById("askResult");
+  if (answer) answer.innerHTML = "";
+}
+
+function renderCurrentDocumentName() {
+  const container = document.getElementById("currentDocumentName");
+  if (!container) return;
+
+  if (!currentDocumentName) {
+    container.textContent = "Sin documento cargado";
+    return;
+  }
+
+  container.textContent = currentDocumentName;
+}
+
+function setUploadMessage(message, isError) {
+  const el = document.getElementById("uploadResult");
+  if (!el) return;
+  el.textContent = message;
+  el.className = isError ? "status error" : "status";
+}
+
+async function searchDocs() {
+  return askDocument();
+}
+
+async function askDocument() {
+  const container = document.getElementById('askResult');
+  setLoadingState(container, "Buscando respuesta...");
+  persistLastAnswer("");
+
+  try {
+    const question = document.getElementById('askQuery').value.trim();
+    const activeDocumentId = (currentDocumentId || "").trim();
+    if (!question) {
+      setMessage(container, "Escribe una consulta.", "error");
+      return;
+    }
+    if (!activeDocumentId) {
+      setMessage(container, "Sube un documento antes de consultar.", "error");
+      return;
+    }
+
+    persistQueryState();
+    console.log("active_document_id_before_ask", activeDocumentId);
+
+    let url = API + "/ask?q=" + encodeURIComponent(question) + "&top_k=3";
+    url += "&document_id=" + encodeURIComponent(activeDocumentId);
+    if (activeDocumentId) {
+      saveCurrentDocument(activeDocumentId, currentDocumentName);
+    }
+    const res = await fetch(url, {
+      method: "GET",
+      headers: authHeaders()
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      setMessage(container, friendlyErrorText(text, "No se pudo responder la consulta."), "error");
+      return;
+    }
+
+    const data = await res.json();
+    renderAnswer(data.answer || "");
+    persistLastAnswer(data.answer || "");
+    loadAskHistory();
+  } catch (err) {
+    setMessage(container, "No se pudo responder la consulta.", "error");
+  }
+}
+
+async function deleteHistoryItem(id) {
+  if (!id) {
+    return;
+  }
+  closeHistoryMenu();
+  pendingDeleteHistoryId = id;
+  confirmAction = "delete-single";
+  openConfirmModal("¿Seguro que quieres eliminar esta pregunta del historial?");
+}
+
+function requestClearHistory() {
+  closeHistoryMenu();
+  confirmAction = "clear-history";
+  openConfirmModal("¿Seguro que quieres vaciar el historial?");
+}
+
+function openConfirmModal(message) {
+  document.getElementById('confirmModalText').textContent = message || "¿Seguro que quieres eliminar esta pregunta del historial?";
+  document.getElementById('confirmModal').classList.remove('hidden');
+}
+
+function closeConfirmModal() {
+  pendingDeleteHistoryId = "";
+  confirmAction = null;
+  document.getElementById('confirmModal').classList.add('hidden');
+}
+
+async function confirmDeleteHistory() {
+  const id = pendingDeleteHistoryId;
+  if (confirmAction === "clear-history") {
+    closeConfirmModal();
+    setFavoriteHistoryIds([]);
+    setHiddenHistoryIds(lastHistoryItems.map(function (item) { return item.id; }).filter(Boolean));
+    lastHistoryItems = [];
+    renderHistoryList(lastHistoryItems);
+    return;
+  }
+  if (!id) {
+    closeConfirmModal();
+    return;
+  }
+  closeConfirmModal();
+
+  const container = document.getElementById('historyResult');
+  try {
+    const res = await fetch(API + "/ask/history/" + encodeURIComponent(id), {
+      method: "DELETE",
+      headers: authHeaders()
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      setMessage(container, friendlyErrorText(text, "No se pudo eliminar la pregunta."), "error");
+      return;
+    }
+
+    await loadAskHistory();
+  } catch (err) {
+    setMessage(container, "No se pudo eliminar la pregunta.", "error");
+  }
+}
+
+function sortHistoryItems(items) {
+  return items.slice().sort(function (a, b) {
+    const aFav = isHistoryFavorite(a.id || "") ? 1 : 0;
+    const bFav = isHistoryFavorite(b.id || "") ? 1 : 0;
+    if (aFav !== bFav) {
+      return bFav - aFav;
+    }
+    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+  });
+}
+
+function renderHistoryList(items) {
+  const container = document.getElementById('historyResult');
+  container.innerHTML = "";
+
+  const hiddenIds = getHiddenHistoryIds();
+  const visibleItems = sortHistoryItems((items || []).filter(function (item) {
+    return item && item.id && !hiddenIds.includes(item.id);
+  }));
+
+  if (!visibleItems.length) {
+    setMessage(container, "No hay preguntas guardadas.", "muted");
+    return;
+  }
+
+  visibleItems.slice(0, 20).forEach(function (item) {
+    const div = document.createElement('div');
+    div.className = "history-card";
+
+    const head = document.createElement('div');
+    head.className = "history-head";
+
+    const question = document.createElement('p');
+    question.className = "history-question";
+    question.textContent = item.question || "Pregunta sin texto";
+    head.appendChild(question);
+
+    const menuWrap = document.createElement('div');
+    menuWrap.className = "history-item-menu";
+
+    const favoriteButton = document.createElement('button');
+    favoriteButton.type = "button";
+    favoriteButton.className = "history-favorite" + (isHistoryFavorite(item.id || "") ? " active" : "");
+    favoriteButton.textContent = "★";
+    favoriteButton.setAttribute("aria-label", "Favorito");
+    favoriteButton.onclick = function (event) {
+      event.stopPropagation();
+      toggleHistoryFavorite(item.id || "");
+    };
+    menuWrap.appendChild(favoriteButton);
+
+    const menuButton = document.createElement('button');
+    menuButton.type = "button";
+    menuButton.className = "history-menu-button";
+    menuButton.textContent = "⋯";
+    menuButton.setAttribute("aria-label", "Opciones");
+    menuButton.onclick = function (event) {
+      event.stopPropagation();
+      toggleHistoryMenu(item.id || "");
+    };
+    menuWrap.appendChild(menuButton);
+
+    const contextMenu = document.createElement('div');
+    contextMenu.className = "history-context-menu hidden";
+    contextMenu.setAttribute("data-history-menu", item.id || "");
+
+    const useOption = document.createElement('button');
+    useOption.type = "button";
+    useOption.className = "secondary-button";
+    useOption.textContent = "Usar";
+    useOption.onclick = function () {
+      useHistoryQuestion(item.question || "", item.document_id || "");
+    };
+
+    const favoriteOption = document.createElement('button');
+    favoriteOption.type = "button";
+    favoriteOption.className = "secondary-button";
+    favoriteOption.textContent = isHistoryFavorite(item.id || "") ? "Quitar favorito" : "Marcar favorito";
+    favoriteOption.onclick = function () {
+      toggleHistoryFavorite(item.id || "");
+    };
+
+    const deleteOption = document.createElement('button');
+    deleteOption.type = "button";
+    deleteOption.className = "danger-button";
+    deleteOption.textContent = "Eliminar";
+    deleteOption.style.marginTop = "4px";
+    deleteOption.onclick = function () {
+      deleteHistoryItem(item.id || "");
+    };
+
+    contextMenu.appendChild(useOption);
+    contextMenu.appendChild(favoriteOption);
+    contextMenu.appendChild(deleteOption);
+    menuWrap.appendChild(contextMenu);
+    head.appendChild(menuWrap);
+    div.appendChild(head);
+
+    const meta = document.createElement('div');
+    meta.className = "history-meta";
+    meta.textContent = formatHistoryDate(item.created_at || "");
+    div.appendChild(meta);
+
+    container.appendChild(div);
+  });
+
+  renderHistoryMenus();
+}
+
+async function loadAskHistory() {
+  const container = document.getElementById('historyResult');
+  setLoadingState(container, "Cargando historial");
+
+  try {
+    const res = await fetch(API + "/ask/history", {
+      method: "GET",
+      headers: authHeaders()
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      setMessage(container, friendlyErrorText(text, "No se pudo cargar el historial."), "error");
+      return;
+    }
+
+    const data = await res.json();
+    lastHistoryItems = Array.isArray(data) ? data : [];
+    renderHistoryList(lastHistoryItems);
+  } catch (err) {
+    setMessage(container, "No se pudo cargar el historial.", "error");
+  }
+}
+
+document.getElementById('loginPassword').addEventListener('keydown', function (event) {
+  if (event.key === "Enter") {
+    login();
+  }
+});
+
+document.getElementById('askQuery').addEventListener('keydown', function (event) {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    askDocument();
+  }
+});
+
+document.getElementById('askQuery').addEventListener('input', function () {
+  persistQueryState();
+});
+
+document.getElementById("uploadButton").addEventListener("click", function () {
+  document.getElementById("file").click();
+});
+
+document.getElementById("file").addEventListener("change", uploadSelectedFile);
+
+document.getElementById("clearButton").addEventListener("click", clearDocument);
+
+document.addEventListener('click', function (event) {
+  const menu = document.getElementById('sessionMenu');
+  const menuArea = document.querySelector('.topbar-actions');
+  if (!menuArea.contains(event.target)) {
+    menu.classList.add('hidden');
+  }
+  const historyMenuTarget = event.target.closest('.history-item-menu');
+  if (!historyMenuTarget) {
+    closeHistoryMenu();
+  }
+  const modal = document.getElementById('confirmModal');
+  if (!modal.classList.contains('hidden') && event.target === modal) {
+    closeConfirmModal();
+  }
+});
+
+if (getAuthToken()) {
+  showApp();
+} else {
+  showLogin();
+}
+</script>
+</body>
+</html>

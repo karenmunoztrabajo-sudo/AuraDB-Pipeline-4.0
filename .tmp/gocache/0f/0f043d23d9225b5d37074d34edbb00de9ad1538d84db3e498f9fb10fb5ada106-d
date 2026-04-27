@@ -1,0 +1,7 @@
+./ask_handler.go
+./auth_handler.go
+./auth_middleware.go
+./document_handler.go
+./protected_handler.go
+./search_handler.go
+./tenant_handler.go

@@ -1,0 +1,14 @@
+CREATE INDEX idx_users_tenant_id ON users(tenant_id);
+CREATE INDEX idx_sources_tenant_id ON sources(tenant_id);
+CREATE INDEX idx_documents_tenant_id ON documents(tenant_id);
+CREATE INDEX idx_document_versions_document_id ON document_versions(document_id);
+CREATE INDEX idx_jobs_tenant_id ON jobs(tenant_id);
+CREATE INDEX idx_jobs_status ON jobs(status);
+CREATE INDEX idx_job_steps_job_id ON job_steps(job_id);
+CREATE INDEX idx_ir_documents_tenant_id ON ir_documents(tenant_id);
+CREATE INDEX idx_ir_blocks_ir_document_id ON ir_blocks(ir_document_id);
+CREATE INDEX idx_privacy_decisions_tenant_id ON privacy_decisions(tenant_id);
+CREATE INDEX idx_chunks_tenant_id ON chunks(tenant_id);
+CREATE INDEX idx_embeddings_chunk_id ON embeddings(chunk_id);
+CREATE INDEX idx_audit_logs_tenant_id ON audit_logs(tenant_id);
+CREATE INDEX idx_cost_ledger_tenant_id ON cost_ledger(tenant_id);
