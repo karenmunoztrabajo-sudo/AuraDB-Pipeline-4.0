@@ -367,6 +367,10 @@ func formatMegabytes(sizeBytes int64) string {
 }
 
 func isAllowedDocumentUpload(filename string, contentType string) bool {
+	if isImageUpload(filename, contentType) {
+		return true
+	}
+
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".txt", ".pdf", ".docx", ".csv", ".xlsx":

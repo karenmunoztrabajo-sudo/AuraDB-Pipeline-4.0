@@ -60,6 +60,11 @@ func openVerifiedPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 
+	if err := RunStartupMigrations(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
 	return pool, nil
 }
 

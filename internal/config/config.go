@@ -15,6 +15,8 @@ type Config struct {
 	MinioSecretKey   string
 	MinioBucket      string
 	JWTSecret        string
+	OpenAIAPIKey     string
+	OpenAIModel      string
 	OllamaBaseURL    string
 	OllamaChatModel  string
 	OllamaEmbedModel string
@@ -34,6 +36,8 @@ func Load() Config {
 		MinioSecretKey:   getEnv("MINIO_SECRET_KEY", "minioadmin"),
 		MinioBucket:      getEnv("MINIO_BUCKET", "auradb-raw"),
 		JWTSecret:        getEnv("JWT_SECRET", "supersecreto"),
+		OpenAIAPIKey:     getEnv("OPENAI_API_KEY", ""),
+		OpenAIModel:      getEnv("OPENAI_MODEL", "gpt-4o-mini"),
 		OllamaBaseURL:    getEnv("OLLAMA_BASE_URL", "http://localhost:11434"),
 		OllamaChatModel:  getEnv("OLLAMA_CHAT_MODEL", "llama3.2:3b"),
 		OllamaEmbedModel: getEnv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),

@@ -72,7 +72,7 @@ func (s *OllamaChatService) Answer(ctx context.Context, question string, context
 		return "", errors.New("pregunta vacía")
 	}
 
-	promptConfig := promptConfigForQueryType(queryType)
+	promptConfig := promptConfigForQuestion(question, queryType)
 	return s.answerWithPrompt(ctx, question, contextText, promptConfig.SystemPrompt, promptConfig.UserRules, promptConfig.NumPredict)
 }
 
@@ -178,52 +178,126 @@ func (s *OllamaChatService) answerWithPrompt(ctx context.Context, question strin
 }
 
 func trimContextForQuery(question string, contextText string) string {
-	if QueryTypeForQuery(question) != "summary" {
-		return contextText
+	maxContextRunes := 18000
+	if QueryTypeForQuery(question) == "summary" {
+		maxContextRunes = 32000
 	}
 
-	const maxSummaryContextRunes = 12000
 	runes := []rune(strings.TrimSpace(contextText))
-	if len(runes) <= maxSummaryContextRunes {
+	if len(runes) <= maxContextRunes {
 		return string(runes)
 	}
-	return strings.TrimSpace(string(runes[:maxSummaryContextRunes]))
+	return strings.TrimSpace(string(runes[:maxContextRunes]))
 }
 
 func promptConfigForQueryType(queryType string) answerPromptConfig {
 	switch queryType {
 	case "summary":
 		return answerPromptConfig{
-			SystemPrompt: "Explica el documento completo utilizando el contexto. Recorre sus partes principales y desarrolla cada una. No hagas un resumen corto. Genera una explicación amplia, clara y estructurada. Usa varios párrafos si es necesario. No inventes información.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Recorre las partes principales del documento y desarrolla cada una.\n- No hagas un resumen corto.\n- Genera una explicación amplia, clara y estructurada.\n- Usa varios párrafos si es necesario.\n- No inventes información.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.\n- Si la información no está clara en el contexto, responde exactamente: No encontré esa información en el documento.",
-			NumPredict:   900,
+			SystemPrompt: "Actúa como analista documental experto. Elabora un resumen amplio, profesional y estructurado usando únicamente el contexto recuperado. No produzcas una lista mínima: desarrolla ideas, relaciones y conclusiones con profundidad.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Estructura la respuesta con: Título, Resumen ejecutivo, Desarrollo por secciones, Ideas principales explicadas y Conclusión.\n- El resumen ejecutivo debe tener varios párrafos sustantivos.\n- En el desarrollo por secciones, explica qué aborda cada parte y por qué es relevante.\n- Las ideas principales deben estar explicadas, no solo enumeradas.\n- No uses referencias internas, identificadores ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.\n- Si el contexto es limitado, desarrolla lo disponible sin mencionar limitaciones técnicas.",
+			NumPredict:   1800,
 		}
 	case "section":
 		return answerPromptConfig{
-			SystemPrompt: "Responde solo sobre la sección o parte pedida usando únicamente el contexto recuperado. Mantén modo grounded: no inventes, no agregues conocimiento externo y no mezcles contenido ajeno a esa parte. La respuesta debe tener una extensión intermedia y desarrollar más de una idea cuando el contexto lo permita. Si la información no está clara en el contexto, responde exactamente: No encontré esa información en el documento.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No mezcles otras partes del documento si no están en el contexto.\n- No inventes.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.\n- Responde con 1 o 2 párrafos breves o con 3 a 6 viñetas útiles si conviene.\n- Si la información no está clara en el contexto, responde exactamente: No encontré esa información en el documento.",
-			NumPredict:   420,
+			SystemPrompt: "Responde como analista documental sobre la sección solicitada usando únicamente el contexto. Desarrolla una explicación profesional, con contexto, alcance e implicaciones dentro del documento.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No mezcles contenido ajeno a la sección si no está respaldado por el contexto.\n- Responde en párrafos completos o en apartados breves con explicación.\n- Evita listas de frases sueltas.\n- No incluyas referencias internas ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
+			NumPredict:   900,
 		}
 	case "structure":
 		return answerPromptConfig{
-			SystemPrompt: "Extrae títulos, secciones, hojas, columnas o temas del documento usando solo el contexto. Mantén modo grounded: no inventes y no agregues conocimiento externo. Responde en formato lista breve. Si no hay títulos literales, extrae los temas más claros y fieles al contenido. No incluyas referencias internas, identificadores, ni formatos como [chunk_id: ...] o [document_id: ...] en la respuesta final.",
-			UserRules:    "Reglas obligatorias:\n- Extrae estructura o temas visibles en el contexto.\n- Responde solo en formato lista breve.\n- No expliques cada punto.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.\n- Devuelve hasta 8 elementos si el contexto lo permite.",
-			NumPredict:   220,
+			SystemPrompt: "Construye un índice comentado del documento usando solo el contexto. Identifica secciones, temas, hojas, columnas o bloques y explica brevemente qué contiene cada uno.",
+			UserRules:    "Reglas obligatorias:\n- Extrae estructura o temas visibles en el contexto.\n- Presenta un índice comentado, no una lista mínima.\n- Cada elemento debe incluir una explicación de su contenido o función.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.",
+			NumPredict:   850,
 		}
 	default:
 		return answerPromptConfig{
-			SystemPrompt: "Responde solo con información del contexto recuperado. Mantén modo grounded total: no inventes, no uses conocimiento externo y no expliques de más. Si la respuesta no está clara en el contexto, responde exactamente: No encontré esa información en el documento. La respuesta debe ser breve y directa.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No inventes.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.\n- Responde breve, clara y directa.\n- Máximo 3 o 4 líneas.\n- Si la respuesta no está clara en el contexto, responde exactamente: No encontré esa información en el documento.",
-			NumPredict:   180,
+			SystemPrompt: "Responde como analista documental experto usando solo el contexto recuperado. Da una respuesta argumentada, clara y profesional, con párrafos completos y explicación suficiente.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Responde en párrafos completos, no en frases sueltas.\n- Explica el contexto, la respuesta y sus matices dentro del documento.\n- No inventes información ni agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.\n- Si la información es parcial, responde con lo que el documento permite afirmar.",
+			NumPredict:   900,
 		}
+	}
+}
+
+func promptConfigForQuestion(question string, queryType string) answerPromptConfig {
+	if queryType != "question" {
+		if queryType == "summary" && IsKeyPointsQuery(question) {
+			return keyPointsPromptConfig()
+		}
+		return promptConfigForQueryType(queryType)
+	}
+
+	task := DocumentTaskForQuery(question)
+	switch task {
+	case DocumentTaskDates:
+		return answerPromptConfig{
+			SystemPrompt: "Extrae fechas del documento usando solo el contexto. Incluye fecha, evento asociado y parte/seccion si aparece. No inventes fechas.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Responde en lista breve.\n- Incluye la fecha y qué representa.\n- Si no hay fechas claras, responde exactamente: No encontré esa información en el documento.",
+			NumPredict:   260,
+		}
+	case DocumentTaskParts:
+		return answerPromptConfig{
+			SystemPrompt: "Identifica partes, firmantes, actores o entidades mencionadas usando solo el contexto. No inventes nombres ni roles.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Responde en lista breve.\n- Incluye nombre y rol si aparece.\n- Si no hay partes claras, responde exactamente: No encontré esa información en el documento.",
+			NumPredict:   260,
+		}
+	case DocumentTaskEconomicValues:
+		return answerPromptConfig{
+			SystemPrompt: "Extrae valores económicos del documento usando solo el contexto. Incluye monto, moneda, concepto y condiciones si aparecen.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No calcules ni infieras montos no escritos.\n- Responde en lista breve.\n- Si no hay valores claros, responde exactamente: No encontré esa información en el documento.",
+			NumPredict:   280,
+		}
+	case DocumentTaskObligations:
+		return answerPromptConfig{
+			SystemPrompt: "Identifica obligaciones, deberes, responsabilidades o condiciones vinculantes usando solo el contexto. No inventes obligaciones.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Indica obligado, obligación y plazo/condición si aparecen.\n- Responde en lista breve.\n- Si no hay obligaciones claras, responde exactamente: No encontré esa información en el documento.",
+			NumPredict:   360,
+		}
+	case DocumentTaskContradictions:
+		return answerPromptConfig{
+			SystemPrompt: "Detecta posibles contradicciones o inconsistencias internas usando solo el contexto. Señala únicamente conflictos respaldados por fragmentos recuperados.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No inventes contradicciones.\n- Explica brevemente los puntos en tensión.\n- Si no hay contradicciones claras, responde exactamente: No encontré esa información en el documento.",
+			NumPredict:   380,
+		}
+	case DocumentTaskLegalAnalysis:
+		return answerPromptConfig{
+			SystemPrompt: "Genera un análisis jurídico preliminar usando solo el contexto. Identifica partes, obligaciones, riesgos, plazos y puntos que requieren revisión. No des asesoría definitiva.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No agregues normas externas si no están en el contexto.\n- Presenta hallazgos y riesgos en viñetas.\n- Si el contexto no alcanza, responde exactamente: No encontré esa información en el documento.",
+			NumPredict:   520,
+		}
+	case DocumentTaskCompareDocuments:
+		return answerPromptConfig{
+			SystemPrompt: "Compara documentos usando solo el contexto recuperado. Identifica coincidencias, diferencias, cambios de obligaciones, fechas, partes y valores.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No inventes documentos ni diferencias.\n- Responde en secciones breves: Coincidencias, Diferencias, Riesgos.\n- Si el contexto no permite comparar, responde exactamente: No encontré esa información en el documento.",
+			NumPredict:   520,
+		}
+	default:
+		return promptConfigForQueryType(queryType)
+	}
+}
+
+func IsKeyPointsQuery(query string) bool {
+	normalized := NormalizeSearchText(query)
+	return strings.Contains(normalized, "puntos clave") ||
+		strings.Contains(normalized, "ideas clave") ||
+		strings.Contains(normalized, "aspectos clave") ||
+		strings.Contains(normalized, "lo mas importante") ||
+		strings.Contains(normalized, "principales puntos")
+}
+
+func keyPointsPromptConfig() answerPromptConfig {
+	return answerPromptConfig{
+		SystemPrompt: "Extrae y desarrolla los puntos clave del documento como analista documental experto. Cada punto debe estar explicado con suficiente contexto, no como frase aislada.",
+		UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Presenta el título: Puntos clave del documento.\n- Incluye entre 5 y 8 puntos clave.\n- Cada punto debe tener una explicación de 3 a 5 líneas, con contexto y relevancia.\n- Evita puntos de una sola frase.\n- No incluyas referencias internas ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
+		NumPredict:   1300,
 	}
 }
 
 func summarySectionPromptConfig() sectionSummaryPromptConfig {
 	return sectionSummaryPromptConfig{
-		SystemPrompt: "Resume brevemente la seccion usando solo el contexto recuperado. Identifica la idea principal, los puntos importantes y el rol de esta seccion dentro del documento. No inventes informacion.",
-		UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Resume esta seccion en un parrafo breve.\n- Identifica su aporte principal dentro del documento.\n- No inventes informacion.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas tecnicas.\n- Si la informacion no esta clara en el contexto, responde exactamente: No encontré esa información en el documento.",
-		NumPredict:   220,
+		SystemPrompt: "Analiza la seccion usando solo el contexto recuperado. Identifica su idea principal, puntos importantes y aporte dentro del documento con una explicación desarrollada.",
+		UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Escribe 2 o 3 párrafos explicativos.\n- Identifica el aporte principal de la sección dentro del documento.\n- No inventes información.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.",
+		NumPredict:   550,
 	}
 }
 

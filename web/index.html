@@ -1056,10 +1056,22 @@ function cleanErrorText(text) {
   return (text || "").replace(/\s+/g, " ").trim();
 }
 
-function friendlyErrorText(text, fallback) {
+function friendlyErrorText(text, defaultText) {
   const cleaned = cleanErrorText(text);
   if (!cleaned) {
-    return fallback;
+    return defaultText;
+  }
+  const lower = cleaned.toLowerCase();
+  if (
+    lower.includes("openai") ||
+    lower.includes("api_key") ||
+    lower.includes("token") ||
+    lower.includes("stack") ||
+    lower.includes("internal") ||
+    lower.includes("bad gateway") ||
+    lower.includes("ia")
+  ) {
+    return defaultText;
   }
   if (cleaned.includes("Formato de archivo no soportado")) {
     return "Formato de archivo no soportado.";
@@ -1067,7 +1079,7 @@ function friendlyErrorText(text, fallback) {
   if (cleaned.includes("tamaño máximo")) {
     return "El archivo supera el tamaño máximo permitido.";
   }
-  return fallback;
+  return defaultText;
 }
 
 function escapeHtml(text) {
@@ -1539,8 +1551,7 @@ async function askDocument() {
     });
 
     if (!res.ok) {
-      const text = await res.text();
-      setMessage(container, friendlyErrorText(text, "No se pudo responder la consulta."), "error");
+      renderAnswer("No se encontró información suficiente en el documento para responder esa consulta.");
       return;
     }
 
@@ -1549,7 +1560,7 @@ async function askDocument() {
     persistLastAnswer(data.answer || "");
     loadAskHistory();
   } catch (err) {
-    setMessage(container, "No se pudo responder la consulta.", "error");
+    renderAnswer("No se encontró información suficiente en el documento para responder esa consulta.");
   }
 }
 

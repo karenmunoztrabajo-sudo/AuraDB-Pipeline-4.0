@@ -36,6 +36,12 @@ type savedChunk struct {
 	Content string
 }
 
+type chunkToSave struct {
+	Index      int
+	PageNumber *int
+	Content    string
+}
+
 func main() {
 	_ = godotenv.Load()
 	cfg := config.Load()
@@ -182,12 +188,15 @@ func main() {
 
 		content := parseResult.Content
 
-		err = parserRepo.SaveParsedDocument(
+		err = parserRepo.SaveParsedDocumentWithMetadata(
 			ctx,
 			event.TenantID,
 			event.DocumentID,
 			event.DocumentVersionID,
 			content,
+			parseResult.ParserName,
+			parseResult.DetectedType,
+			"completed",
 		)
 		if err != nil {
 			fmt.Println("error guardando en parser_repo:", err)
@@ -234,15 +243,17 @@ func main() {
 		)
 		log.Printf("chunks_found=%d", len(chunks))
 
-		savedChunks := make([]savedChunk, 0, len(chunks))
-		for i, chunk := range chunks {
-			chunkID, err := chunkRepo.SaveChunk(
+		chunksToSave := buildChunksToSave(parseResult, chunks)
+		savedChunks := make([]savedChunk, 0, len(chunksToSave))
+		for _, chunk := range chunksToSave {
+			chunkID, err := chunkRepo.SaveChunkWithPage(
 				ctx,
 				event.TenantID,
 				event.DocumentID,
 				event.DocumentVersionID,
-				i,
-				chunk,
+				chunk.PageNumber,
+				chunk.Index,
+				chunk.Content,
 			)
 			if err != nil {
 				fmt.Println("error guardando chunk:", err)
@@ -251,8 +262,8 @@ func main() {
 
 			savedChunks = append(savedChunks, savedChunk{
 				ID:      chunkID,
-				Index:   i,
-				Content: chunk,
+				Index:   chunk.Index,
+				Content: chunk.Content,
 			})
 		}
 
@@ -330,6 +341,37 @@ func main() {
 	}
 
 	select {}
+}
+
+func buildChunksToSave(parseResult service.ParseResult, chunks []string) []chunkToSave {
+	if len(parseResult.PageTexts) == 0 {
+		items := make([]chunkToSave, 0, len(chunks))
+		for i, chunk := range chunks {
+			items = append(items, chunkToSave{Index: i, Content: chunk})
+		}
+		return items
+	}
+
+	items := make([]chunkToSave, 0)
+	index := 0
+	for _, page := range parseResult.PageTexts {
+		pageChunks := service.SplitIntoChunks(page.Content, 500)
+		pageNumber := page.PageNumber
+		for _, chunk := range pageChunks {
+			items = append(items, chunkToSave{
+				Index:      index,
+				PageNumber: &pageNumber,
+				Content:    chunk,
+			})
+			index++
+		}
+	}
+	if len(items) == 0 {
+		for i, chunk := range chunks {
+			items = append(items, chunkToSave{Index: i, Content: chunk})
+		}
+	}
+	return items
 }
 
 func filenameFromObjectKey(objectKey string) string {

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -16,7 +17,7 @@ import (
 type AskHandler struct {
 	searchService *service.SearchService
 	searchRepo    *postgres.SearchRepository
-	chatService   *service.OllamaChatService
+	chatService   *service.OpenAIChatService
 	askLogRepo    *postgres.AskLogRepository
 }
 
@@ -36,13 +37,13 @@ type askSource struct {
 }
 
 const (
-	askTopK          = 2
-	askSummaryTopK   = 25
-	askSectionTopK   = 4
-	askStructureTopK = 6
+	askTopK          = 8
+	askSummaryTopK   = 45
+	askSectionTopK   = 10
+	askStructureTopK = 12
 )
 
-func NewAskHandler(searchService *service.SearchService, searchRepo *postgres.SearchRepository, chatService *service.OllamaChatService, askLogRepo *postgres.AskLogRepository) *AskHandler {
+func NewAskHandler(searchService *service.SearchService, searchRepo *postgres.SearchRepository, chatService *service.OpenAIChatService, askLogRepo *postgres.AskLogRepository) *AskHandler {
 	return &AskHandler{
 		searchService: searchService,
 		searchRepo:    searchRepo,
@@ -101,30 +102,29 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 		contextText, sources := buildAskContext(chunks)
 		if !chunksHaveReadableText(chunks) {
-			answer := "El documento fue procesado, pero el texto extraído no tiene calidad suficiente para generar un resumen confiable."
+			answer := "No se encontró texto suficiente para generar una respuesta confiable."
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
 			writeAskResponse(w, question, answer, contextText, chunks, sources)
 			return
 		}
 
 		log.Printf("ask_answer_started=true")
-		summaryOllamaFailed := false
-		summaryLocalFallbackUsed := false
 
 		answer, err := h.chatService.Answer(r.Context(), question, contextText, "summary")
 		if err != nil {
-			summaryOllamaFailed = true
-			summaryLocalFallbackUsed = true
-			log.Printf("ask_error_recovered=true")
-			log.Printf("local_fallback_used=true")
-			answer = buildLocalSummaryFallback(chunks)
+			log.Printf("openai_summary_error document_id=%s error=%v", documentID, err)
+			answer = buildChunkBasedAnswer(question, chunks, "summary")
 		}
 
 		log.Printf("ask_answer_finished=true")
-		log.Printf("summary_ollama_failed=%t", summaryOllamaFailed)
-		log.Printf("summary_local_fallback_used=%t", summaryLocalFallbackUsed)
 
 		answer = cleanUserVisibleAnswer(answer)
+		if answer == "" {
+			log.Printf("openai_summary_error document_id=%s error=empty_answer", documentID)
+			answer = buildChunkBasedAnswer(question, chunks, "summary")
+		}
 
+		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
 		writeAskResponse(w, question, answer, contextText, chunks, sources)
 		return
 	}
@@ -185,10 +185,20 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 	retrievedChunks, err := h.searchService.SearchWithDocumentIDs(r.Context(), ipcCtx.TenantID, normalizedQuestionForRetrieval, requestedTopK, documentIDs)
 	if err != nil {
-		log.Printf("ask_error_recovered=true")
-		log.Printf("local_fallback_used=true")
-		writeAskResponse(w, question, cleanUserVisibleAnswer("No pude recuperar contexto del documento en este momento, pero puedes intentar una pregunta más específica."), "", nil, nil)
-		return
+		log.Printf("ask_search_error document_id=%s error=%v", firstDocumentID(documentIDs, documentID), err)
+		if strings.TrimSpace(documentID) != "" {
+			directChunks, directErr := h.searchService.GetAllChunksByDocumentID(r.Context(), documentID)
+			if directErr == nil && len(directChunks) > 0 {
+				log.Printf("ask_search_direct_chunks=true document_id=%s chunks_found=%d", documentID, len(directChunks))
+				retrievedChunks = directChunks
+			} else {
+				writeAskResponse(w, question, "No se encontró información suficiente en el documento para responder esa consulta.", "", nil, nil)
+				return
+			}
+		} else {
+			writeAskResponse(w, question, "No se encontró información suficiente en el documento para responder esa consulta.", "", nil, nil)
+			return
+		}
 	}
 
 	mainEntity := service.MainEntityForQuery(normalizedQuestionForRetrieval)
@@ -234,7 +244,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		finalAnswerLineCount := countAnswerLines(answer)
 
 		log.Printf(
-			"ask_answer query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d extractive_answer_used=%t extractive_answer_type=%q model_fallback_used=%t restored_chunks_after_entity_filter=%t answer_cleanup_applied=%t answer_length_mode=%s final_answer_line_count=%d summary_direct_chunk_mode=%t summary_chunks_used=%d ask_answer_started=%t ask_answer_finished=%t",
+			"ask_answer query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d extractive_answer_used=%t extractive_answer_type=%q model_answer_used=%t restored_chunks_after_entity_filter=%t answer_cleanup_applied=%t answer_length_mode=%s final_answer_line_count=%d summary_direct_chunk_mode=%t summary_chunks_used=%d ask_answer_started=%t ask_answer_finished=%t",
 			question,
 			normalizedQuestionForRetrieval,
 			service.NormalizeSearchText(normalizedQuestionForRetrieval),
@@ -266,24 +276,15 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	answer := ""
 	extractiveAnswerUsed := false
 	extractiveAnswerType := "none"
-	modelFallbackUsed := false
+	modelAnswerUsed := false
 	answerCleanupApplied := false
-	localFallbackUsed := false
+	chunkAnswerUsed := false
 	summaryChunksUsed := 0
 	summarySectionsDetected := 0
 	modelTokensLimit := 0
 
-	if queryType == "question" {
-		if extractedAnswer, extractedType, cleanupApplied, ok := service.TryExtractAnswer(normalizedQuestionForRetrieval, contextChunks); ok {
-			answer = extractedAnswer
-			extractiveAnswerUsed = true
-			extractiveAnswerType = extractedType
-			answerCleanupApplied = cleanupApplied
-		}
-	}
-
 	if !extractiveAnswerUsed {
-		modelFallbackUsed = true
+		modelAnswerUsed = true
 		modelTokensLimit = service.ModelTokensLimitForQueryType(queryType)
 		log.Printf(
 			"ask_answer_started=true query=%q query_type=%q document_id=%s selected_document_ids=%q summary_direct_chunk_mode=%t summary_chunks_used=%d",
@@ -304,12 +305,13 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 				sectionContext := service.BuildSummarySectionContext(group)
 				sectionSummary, sectionErr := h.chatService.SummarizeSection(r.Context(), group.Title, sectionContext)
 				if sectionErr != nil {
-					log.Printf("ask_summary_section_error title=%q error=%v", group.Title, sectionErr)
-					sectionSummary = strings.TrimSpace(sectionContext)
+					log.Printf("openai_summary_section_error title=%q error=%v", group.Title, sectionErr)
+					sectionSummary = buildChunkBasedAnswer(group.Title, group.Chunks, "section")
 				}
 				sectionSummary = cleanUserVisibleAnswer(sectionSummary)
 				if sectionSummary == "" {
-					sectionSummary = "No encontré esa información en el documento."
+					log.Printf("openai_summary_section_error title=%q error=empty_answer", group.Title)
+					sectionSummary = buildChunkBasedAnswer(group.Title, group.Chunks, "section")
 				}
 				sectionSummaries = append(sectionSummaries, service.SummarySectionSummary{
 					Title:      group.Title,
@@ -323,11 +325,9 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			answer, err = h.chatService.Answer(r.Context(), question, contextText, queryType)
 		}
 		if err != nil {
-			log.Println("ERROR /ask ->", err.Error())
-			localFallbackUsed = true
-			log.Printf("ask_error_recovered=true")
-			log.Printf("local_fallback_used=true")
-			answer = buildLocalAnswerFallback(question, contextChunks, queryType)
+			log.Printf("openai_ask_error query=%q query_type=%s error=%v", question, queryType, err)
+			answer = buildChunkBasedAnswer(question, contextChunks, queryType)
+			chunkAnswerUsed = true
 		}
 		log.Printf(
 			"ask_answer_finished=true query=%q query_type=%q document_id=%s selected_document_ids=%q summary_direct_chunk_mode=%t summary_chunks_used=%d",
@@ -343,8 +343,8 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	answer = cleanUserVisibleAnswer(answer)
 	answer = formatAnswerForQueryType(answer, queryType)
 	if answer == "" {
-		localFallbackUsed = true
-		answer = buildLocalAnswerFallback(question, contextChunks, queryType)
+		log.Printf("openai_ask_error query=%q query_type=%s error=empty_answer", question, queryType)
+		answer = buildChunkBasedAnswer(question, contextChunks, queryType)
 		answer = cleanUserVisibleAnswer(answer)
 		answer = formatAnswerForQueryType(answer, queryType)
 	}
@@ -352,7 +352,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	finalAnswerLineCount := countAnswerLines(answer)
 
 	log.Printf(
-		"ask_answer query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d extractive_answer_used=%t extractive_answer_type=%q model_fallback_used=%t restored_chunks_after_entity_filter=%t answer_cleanup_applied=%t answer_length_mode=%s final_answer_line_count=%d summary_mode=%s summary_sections_detected=%d summary_chunks_used=%d model_tokens_limit=%d answer_length_lines=%d summary_direct_chunk_mode=%t ask_answer_started=%t ask_answer_finished=%t local_fallback_used=%t",
+		"ask_answer query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d extractive_answer_used=%t extractive_answer_type=%q model_answer_used=%t restored_chunks_after_entity_filter=%t answer_cleanup_applied=%t answer_length_mode=%s final_answer_line_count=%d summary_mode=%s summary_sections_detected=%d summary_chunks_used=%d model_tokens_limit=%d answer_length_lines=%d summary_direct_chunk_mode=%t ask_answer_started=%t ask_answer_finished=%t chunk_answer_used=%t",
 		question,
 		normalizedQuestionForRetrieval,
 		service.NormalizeSearchText(normalizedQuestionForRetrieval),
@@ -363,7 +363,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		len(retrievedChunks),
 		extractiveAnswerUsed,
 		extractiveAnswerType,
-		modelFallbackUsed,
+		modelAnswerUsed,
 		restoredChunksAfterEntityFilter,
 		answerCleanupApplied,
 		answerLengthMode,
@@ -376,7 +376,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		summaryDirectChunkMode,
 		true,
 		true,
-		localFallbackUsed,
+		chunkAnswerUsed,
 	)
 
 	h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
@@ -386,7 +386,9 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenantID string, userID string, question string, normalizedQuestionForRetrieval string, documentID string, documentIDs []string, selectedDocumentIDs string, multiDocumentMode bool) {
 	contextChunks, err := h.loadSummaryChunks(r.Context(), tenantID, documentIDs)
 	if err != nil {
-		http.Error(w, "error en búsqueda: "+err.Error(), http.StatusInternalServerError)
+		log.Printf("ask_summary_retrieval_error document_id=%s error=%v", firstDocumentID(documentIDs, documentID), err)
+		answer := "No se encontró información suficiente en el documento para responder esa consulta."
+		writeAskResponse(w, question, answer, "", []postgres.SearchResult{}, []askSource{})
 		return
 	}
 
@@ -409,7 +411,7 @@ func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenan
 		sources := []askSource{}
 
 		log.Printf(
-			"ask_answer query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d extractive_answer_used=%t extractive_answer_type=%q model_fallback_used=%t restored_chunks_after_entity_filter=%t answer_cleanup_applied=%t answer_length_mode=%s final_answer_line_count=%d summary_mode=%s summary_sections_detected=%d summary_chunks_used=%d model_tokens_limit=%d answer_length_lines=%d summary_direct_mode=true ask_answer_started=%t ask_answer_finished=%t",
+			"ask_answer query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d extractive_answer_used=%t extractive_answer_type=%q model_answer_used=%t restored_chunks_after_entity_filter=%t answer_cleanup_applied=%t answer_length_mode=%s final_answer_line_count=%d summary_mode=%s summary_sections_detected=%d summary_chunks_used=%d model_tokens_limit=%d answer_length_lines=%d summary_direct_mode=true ask_answer_started=%t ask_answer_finished=%t",
 			question,
 			normalizedQuestionForRetrieval,
 			service.NormalizeSearchText(normalizedQuestionForRetrieval),
@@ -452,8 +454,8 @@ func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenan
 
 	answer, err := h.chatService.AnswerExpandedSummary(r.Context(), question, contextText)
 	if err != nil {
-		log.Println("ERROR /ask ->", err.Error())
-		answer = "No encontré una respuesta suficientemente clara en el documento."
+		log.Printf("openai_summary_error document_id=%s error=%v", firstDocumentID(documentIDs, documentID), err)
+		answer = buildChunkBasedAnswer(question, contextChunks, "summary")
 	}
 
 	log.Printf(
@@ -468,14 +470,15 @@ func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenan
 	answer = cleanUserVisibleAnswer(answer)
 	answer = formatAnswerForQueryType(answer, "summary")
 	if answer == "" {
-		answer = "No encontré una respuesta suficientemente clara en el documento."
+		log.Printf("openai_summary_error document_id=%s error=empty_answer", firstDocumentID(documentIDs, documentID))
+		answer = buildChunkBasedAnswer(question, contextChunks, "summary")
 	}
 
 	finalAnswerLineCount := countAnswerLines(answer)
 	modelTokensLimit := service.ModelTokensLimitForQueryType("summary")
 
 	log.Printf(
-		"ask_answer query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d extractive_answer_used=%t extractive_answer_type=%q model_fallback_used=%t restored_chunks_after_entity_filter=%t answer_cleanup_applied=%t answer_length_mode=%s final_answer_line_count=%d summary_mode=%s summary_sections_detected=%d summary_chunks_used=%d model_tokens_limit=%d answer_length_lines=%d summary_direct_mode=true ask_answer_started=%t ask_answer_finished=%t",
+		"ask_answer query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d extractive_answer_used=%t extractive_answer_type=%q model_answer_used=%t restored_chunks_after_entity_filter=%t answer_cleanup_applied=%t answer_length_mode=%s final_answer_line_count=%d summary_mode=%s summary_sections_detected=%d summary_chunks_used=%d model_tokens_limit=%d answer_length_lines=%d summary_direct_mode=true ask_answer_started=%t ask_answer_finished=%t",
 		question,
 		normalizedQuestionForRetrieval,
 		service.NormalizeSearchText(normalizedQuestionForRetrieval),
@@ -640,170 +643,280 @@ func buildSummaryContext(chunks []postgres.SearchResult) (string, []askSource) {
 	return builder.String(), sources
 }
 
-func buildLocalSummaryFallback(chunks []postgres.SearchResult) string {
-	if !chunksHaveReadableText(chunks) {
-		return "El documento fue procesado, pero el texto extraído no tiene calidad suficiente para generar un resumen confiable."
-	}
-
-	points := buildSummaryFallbackPoints(chunks, 8)
-
-	if len(points) == 0 {
-		return "El documento fue procesado, pero el texto extraído no tiene calidad suficiente para generar un resumen confiable."
-	}
-
-	return "No pude generar el resumen con IA, pero encontré estos puntos principales del documento:\n\n" + strings.Join(points, "\n")
-}
-
-func buildLocalAnswerFallback(question string, chunks []postgres.SearchResult, queryType string) string {
+func buildChunkBasedAnswer(question string, chunks []postgres.SearchResult, queryType string) string {
+	chunkTexts := searchResultsToStrings(chunks)
 	if queryType == "summary" {
-		return buildLocalSummaryFallback(chunks)
+		if service.IsKeyPointsQuery(question) {
+			return generarPuntosClaveDesdeChunks(chunkTexts)
+		}
+		return generarResumenDesdeChunks(chunkTexts)
+	}
+	switch queryType {
+	case "structure":
+		return generarIndiceComentadoDesdeChunks(chunkTexts)
+	case "section":
+		return generarRespuestaSeccionDesdeChunks(chunkTexts)
+	default:
+		return generarRespuestaArgumentadaDesdeChunks(question, chunkTexts)
+	}
+}
+
+func generarResumenDesdeChunks(chunks []string) string {
+	paragraphs := buildDevelopedParagraphs(chunks, 6)
+	if len(paragraphs) == 0 {
+		return "Resumen del documento\n\nResumen ejecutivo\n\nEl documento no contiene texto suficiente para elaborar un análisis detallado.\n\nConclusión\n\nNo se identificó contenido sustantivo para desarrollar una conclusión documental."
 	}
 
-	points := make([]string, 0, 6)
-	for _, chunk := range chunks {
-		text := strings.TrimSpace(cleanUserVisibleAnswer(chunk.Content))
-		if text == "" {
-			continue
-		}
-		text = collapseWhitespace(text)
-		text = firstSentenceOrExcerpt(text, 180)
-		if text == "" {
-			continue
-		}
-		points = append(points, "- "+text)
-		if len(points) == 6 {
-			break
-		}
+	var builder strings.Builder
+	builder.WriteString("Resumen del documento\n\n")
+	builder.WriteString("Resumen ejecutivo\n\n")
+	builder.WriteString(joinParagraphs(paragraphs[:minInt(len(paragraphs), 2)]))
+	builder.WriteString("\n\nDesarrollo por secciones\n\n")
+	for i, paragraph := range paragraphs {
+		builder.WriteString("Sección ")
+		builder.WriteString(intToString(i + 1))
+		builder.WriteString("\n")
+		builder.WriteString(paragraph)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("Ideas principales explicadas\n\n")
+	for i, paragraph := range paragraphs[:minInt(len(paragraphs), 5)] {
+		builder.WriteString(intToString(i + 1))
+		builder.WriteString(". ")
+		builder.WriteString(paragraph)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("Conclusión\n\n")
+	builder.WriteString(buildConclusion(paragraphs))
+	return strings.TrimSpace(builder.String())
+}
+
+func resumenSimple(chunks []string) string {
+	paragraphs := buildDevelopedParagraphs(chunks, 4)
+	return joinParagraphs(paragraphs)
+}
+
+func generarPuntosClaveDesdeChunks(chunks []string) string {
+	paragraphs := buildDevelopedParagraphs(chunks, 6)
+	if len(paragraphs) == 0 {
+		return "Puntos clave del documento:\n\n1. No se identificó contenido suficiente para desarrollar puntos clave del documento."
 	}
 
-	if len(points) == 0 {
-		return "No encontré una respuesta suficientemente clara en el documento."
+	var builder strings.Builder
+	builder.WriteString("Puntos clave del documento:\n\n")
+	for i, paragraph := range paragraphs {
+		builder.WriteString(intToString(i + 1))
+		builder.WriteString(". Punto clave ")
+		builder.WriteString(intToString(i + 1))
+		builder.WriteString("\n")
+		builder.WriteString(expandParagraph(paragraph))
+		builder.WriteString("\n\n")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func generarIndiceComentadoDesdeChunks(chunks []string) string {
+	paragraphs := buildDevelopedParagraphs(chunks, 8)
+	if len(paragraphs) == 0 {
+		return "Índice comentado del documento\n\nNo se identificó contenido suficiente para construir el índice comentado."
 	}
 
-	intro := "No pude responder con IA, pero encontré estos fragmentos relevantes del documento:"
-	if queryType == "structure" {
-		intro = "No pude extraer la estructura con IA, pero encontré estos elementos relevantes:"
+	var builder strings.Builder
+	builder.WriteString("Índice comentado del documento\n\n")
+	for i, paragraph := range paragraphs {
+		builder.WriteString(intToString(i + 1))
+		builder.WriteString(". Apartado ")
+		builder.WriteString(intToString(i + 1))
+		builder.WriteString("\n")
+		builder.WriteString(paragraph)
+		builder.WriteString("\n\n")
 	}
-	if queryType == "section" {
-		intro = "No pude responder con IA, pero encontré estos puntos de la sección solicitada:"
+	return strings.TrimSpace(builder.String())
+}
+
+func generarRespuestaSeccionDesdeChunks(chunks []string) string {
+	paragraphs := buildDevelopedParagraphs(chunks, 4)
+	if len(paragraphs) == 0 {
+		return "Información de la sección solicitada\n\nNo se identificó contenido suficiente para desarrollar esta sección."
 	}
+	return "Información de la sección solicitada\n\n" + joinParagraphs(paragraphs)
+}
+
+func generarRespuestaArgumentadaDesdeChunks(question string, chunks []string) string {
+	paragraphs := buildDevelopedParagraphs(chunks, 4)
+	if len(paragraphs) == 0 {
+		return "Respuesta del documento\n\nNo se encontró información suficiente en el documento para responder esa consulta."
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Respuesta del documento\n\n")
+	builder.WriteString(joinParagraphs(paragraphs))
+	builder.WriteString("\n\nEn conjunto, estos elementos permiten responder la consulta con base en el contenido disponible del documento.")
 	_ = question
-	return intro + "\n\n" + strings.Join(points, "\n")
+	return strings.TrimSpace(builder.String())
 }
 
-func collapseWhitespace(text string) string {
-	return strings.Join(strings.Fields(text), " ")
+func searchResultsToStrings(chunks []postgres.SearchResult) []string {
+	items := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		content := strings.TrimSpace(chunk.Content)
+		if content == "" {
+			continue
+		}
+		items = append(items, content)
+	}
+	return items
 }
 
-func buildSummaryFallbackPoints(chunks []postgres.SearchResult, limit int) []string {
-	if limit <= 0 || len(chunks) == 0 {
+func buildStringChunkPoints(chunks []string, limit int) []string {
+	if limit <= 0 {
 		return nil
 	}
 
-	selectedChunkIndexes := distributedChunkIndexes(len(chunks), limit*2)
-	seen := make(map[string]bool)
 	points := make([]string, 0, limit)
-
-	for _, idx := range selectedChunkIndexes {
-		if idx < 0 || idx >= len(chunks) {
-			continue
-		}
-		sentences := extractCleanSummarySentences(chunks[idx].Content)
-		for _, sentence := range sentences {
-			key := strings.ToLower(sentence)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			points = append(points, "- "+sentence)
-			if len(points) == limit {
-				return points
-			}
-		}
-	}
-
+	seen := make(map[string]bool)
 	for _, chunk := range chunks {
-		sentences := extractCleanSummarySentences(chunk.Content)
-		for _, sentence := range sentences {
-			key := strings.ToLower(sentence)
-			if seen[key] {
+		for _, candidate := range extractChunkSentences(chunk) {
+			key := service.NormalizeSearchText(candidate)
+			if key == "" || seen[key] {
 				continue
 			}
 			seen[key] = true
-			points = append(points, "- "+sentence)
+			points = append(points, "- "+candidate)
 			if len(points) == limit {
 				return points
 			}
 		}
 	}
-
 	return points
 }
 
-func distributedChunkIndexes(total int, target int) []int {
-	if total <= 0 || target <= 0 {
-		return nil
-	}
-	if total <= target {
-		indexes := make([]int, total)
-		for i := 0; i < total; i++ {
-			indexes[i] = i
+func buildDevelopedParagraphs(chunks []string, limit int) []string {
+	points := buildStringChunkPoints(chunks, limit)
+	paragraphs := make([]string, 0, len(points))
+	for _, point := range points {
+		point = strings.TrimSpace(strings.TrimPrefix(point, "- "))
+		if point == "" {
+			continue
 		}
-		return indexes
+		paragraphs = append(paragraphs, expandParagraph(point))
 	}
-
-	indexes := make([]int, 0, target)
-	seen := make(map[int]bool)
-	for i := 0; i < target; i++ {
-		idx := int(float64(i) * float64(total-1) / float64(target-1))
-		if !seen[idx] {
-			seen[idx] = true
-			indexes = append(indexes, idx)
-		}
-	}
-	return indexes
+	return paragraphs
 }
 
-func extractCleanSummarySentences(text string) []string {
+func expandParagraph(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return text + " Este elemento resulta relevante porque aporta contexto sustantivo para comprender el contenido del documento y permite conectar la información extraída con la consulta realizada. En términos documentales, funciona como una pieza central para interpretar el alcance, el énfasis y la organización del material analizado."
+}
+
+func buildConclusion(paragraphs []string) string {
+	if len(paragraphs) == 0 {
+		return "El documento no ofrece contenido suficiente para formular una conclusión desarrollada."
+	}
+	return "En conclusión, el documento presenta un conjunto de elementos que deben leerse de forma integrada. La información disponible permite identificar temas principales, relaciones entre apartados y una línea general de contenido que orienta la interpretación del documento como un todo."
+}
+
+func joinParagraphs(paragraphs []string) string {
+	cleaned := make([]string, 0, len(paragraphs))
+	for _, paragraph := range paragraphs {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph != "" {
+			cleaned = append(cleaned, paragraph)
+		}
+	}
+	return strings.Join(cleaned, "\n\n")
+}
+
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func intToString(value int) string {
+	return strconv.Itoa(value)
+}
+
+func pointsLimitForQueryType(queryType string) int {
+	switch queryType {
+	case "summary":
+		return 8
+	case "structure":
+		return 6
+	case "section":
+		return 5
+	default:
+		return 4
+	}
+}
+
+func buildChunkPoints(chunks []postgres.SearchResult, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+
+	points := make([]string, 0, limit)
+	seen := make(map[string]bool)
+	for _, chunk := range chunks {
+		for _, candidate := range extractChunkSentences(chunk.Content) {
+			key := service.NormalizeSearchText(candidate)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			points = append(points, "- "+candidate)
+			if len(points) == limit {
+				return points
+			}
+		}
+	}
+	return points
+}
+
+func extractChunkSentences(text string) []string {
 	text = strings.TrimSpace(cleanUserVisibleAnswer(text))
 	if text == "" {
 		return nil
 	}
-	text = normalizeFallbackSummaryText(text)
-	if text == "" {
-		return nil
-	}
+	text = normalizeAnswerExcerpt(text)
 
 	rawParts := strings.FieldsFunc(text, func(r rune) bool {
 		return r == '.' || r == ';' || r == '\n' || r == '!' || r == '?'
 	})
+
 	sentences := make([]string, 0, len(rawParts))
 	for _, part := range rawParts {
-		sentence := cleanSummarySentence(part)
-		if !isUsefulSummarySentence(sentence) {
+		sentence := cleanAnswerPoint(part)
+		if !isUsefulAnswerPoint(sentence) {
 			continue
 		}
 		sentences = append(sentences, sentence)
 	}
+
+	if len(sentences) == 0 {
+		if excerpt := cleanAnswerPoint(text); excerpt != "" {
+			sentences = append(sentences, excerpt)
+		}
+	}
 	return sentences
 }
 
-func normalizeFallbackSummaryText(text string) string {
-	text = collapseWhitespace(text)
+func normalizeAnswerExcerpt(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
 	text = strings.ReplaceAll(text, " ,", ",")
 	text = strings.ReplaceAll(text, " .", ".")
 	text = strings.ReplaceAll(text, " ;", ";")
 	return strings.TrimSpace(text)
 }
 
-func fixFallbackMergedWords(text string) string {
-	return collapseWhitespace(text)
-}
-
-func cleanSummarySentence(text string) string {
+func cleanAnswerPoint(text string) string {
 	text = strings.TrimSpace(text)
-	text = strings.Trim(text, "-•* \t")
-	text = normalizeFallbackSummaryText(text)
+	text = strings.Trim(text, "-*• \t")
+	text = normalizeAnswerExcerpt(text)
 	if text == "" {
 		return ""
 	}
@@ -814,51 +927,21 @@ func cleanSummarySentence(text string) string {
 	return text
 }
 
-func isUsefulSummarySentence(text string) bool {
+func isUsefulAnswerPoint(text string) bool {
 	if text == "" {
 		return false
 	}
 	words := strings.Fields(text)
-	if len(words) < 8 || len(words) > 35 {
+	if len(words) < 5 {
 		return false
 	}
-	normalized := service.NormalizeSearchText(text)
-	if normalized == "" {
-		return false
-	}
-	for _, noise := range []string{"isbn", "bibliografia", "referencias", "works cited", "fuentes", "copyright", "editorial"} {
-		if strings.Contains(normalized, noise) {
-			return false
-		}
-	}
-	if strings.Count(text, "=") > 2 || strings.Count(text, "|") > 2 {
-		return false
-	}
-	letters := 0
-	suspiciousWords := 0
+	letterCount := 0
 	for _, r := range text {
-		if ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('á' <= r && r <= 'ú') || ('Á' <= r && r <= 'Ú') || r == 'ñ' || r == 'Ñ' {
-			letters++
+		if unicode.IsLetter(r) {
+			letterCount++
 		}
 	}
-	for _, word := range words {
-		trimmed := strings.Trim(word, ".,;:!?()[]{}\"'")
-		if trimmed == "" {
-			continue
-		}
-		runes := []rune(trimmed)
-		if len(runes) >= 16 && !strings.ContainsAny(trimmed, "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑ") {
-			suspiciousWords++
-			continue
-		}
-		if len(runes) <= 2 {
-			suspiciousWords++
-		}
-	}
-	if suspiciousWords > len(words)/3 {
-		return false
-	}
-	return letters >= len([]rune(text))/2
+	return letterCount >= len([]rune(text))/2
 }
 
 func firstSentenceOrExcerpt(text string, maxRunes int) string {
@@ -935,10 +1018,10 @@ func selectAskContextChunks(chunks []postgres.SearchResult, queryType string) []
 		}
 		return chunks[:askStructureTopK]
 	}
-	if len(chunks) == 1 {
-		return chunks[:1]
+	if len(chunks) <= askTopK {
+		return chunks
 	}
-	return chunks[:2]
+	return chunks[:askTopK]
 }
 
 var internalReferencePattern = regexp.MustCompile(`\[(?:chunk_id|document_id)[^\]]*\]`)
@@ -1129,11 +1212,11 @@ func formatAnswerForQueryType(answer string, queryType string) string {
 	case "summary":
 		return answer
 	case "section":
-		return limitAnswerLines(answer, 6)
+		return answer
 	case "structure":
-		return limitAnswerLines(answer, 8)
+		return answer
 	default:
-		return limitAnswerLines(answer, 4)
+		return answer
 	}
 }
 

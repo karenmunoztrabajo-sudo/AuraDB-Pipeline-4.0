@@ -23,8 +23,10 @@ func (r *DocumentRepository) CreateDocument(
 	id := uuid.New().String()
 
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO documents (id, tenant_id, logical_name)
-		VALUES ($1, $2, $3)
+		INSERT INTO documents (
+			id, tenant_id, logical_name, original_name, file_type, processing_status, uploaded_at
+		)
+		VALUES ($1, $2, $3, $3, '', 'uploaded', NOW())
 	`, id, tenantID, logicalName)
 	if err != nil {
 		return "", err
@@ -80,4 +82,30 @@ func (r *DocumentRepository) CreateRawObject(
 	`, id, tenantID, documentVersionID, objectKey, bucketName, contentHash, mimeType, sizeBytes)
 
 	return err
+}
+
+func (r *DocumentRepository) CreateUploadedDocument(
+	ctx context.Context,
+	tenantID string,
+	ownerUserID string,
+	originalName string,
+	storedName string,
+	mimeType string,
+	sizeBytes int64,
+	path string,
+) (string, error) {
+	id := uuid.New().String()
+
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO documents (
+			id, tenant_id, logical_name, original_name, stored_name,
+			mime_type, size, path, status, owner_user_id, uploaded_at
+		)
+		VALUES ($1, $2, $3, $3, $4, $5, $6, $7, 'UPLOADED', $8, NOW())
+	`, id, tenantID, originalName, storedName, mimeType, sizeBytes, path, ownerUserID)
+	if err != nil {
+		return "", err
+	}
+
+	return id, nil
 }

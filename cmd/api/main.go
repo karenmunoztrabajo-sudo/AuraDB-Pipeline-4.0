@@ -60,13 +60,20 @@ func main() {
 	auditRepo := postgres.NewAuditRepository(dbPool)
 
 	documentHandler := apphttp.NewDocumentHandler(docRepo, jobRepo, auditRepo, minioRepo, natsRepo)
+	simpleDocumentUploadHandler := apphttp.NewSimpleDocumentUploadHandler(docRepo, "uploads/documents")
 
 	searchRepo := postgres.NewSearchRepository(dbPool)
 	embeddingService := service.NewOllamaEmbeddingService(cfg)
 	searchService := service.NewSearchServiceWithEmbedding(searchRepo, embeddingService)
 	searchHandler := apphttp.NewSearchHandler(searchService)
 
-	chatService := service.NewOllamaChatService(cfg)
+	chatService, err := service.NewOpenAIChatService(cfg)
+	if err != nil {
+		log.Fatal("error configurando OpenAI:", err)
+	}
+	if cfg.OpenAIAPIKey == "" {
+		log.Println("OPENAI_API_KEY no configurada; las consultas usarán respuesta basada en chunks.")
+	}
 	askLogRepo := postgres.NewAskLogRepository(dbPool)
 	askHandler := apphttp.NewAskHandler(searchService, searchRepo, chatService, askLogRepo)
 
@@ -106,6 +113,9 @@ func main() {
 
 	uploadProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(documentHandler.Upload))
 	mux.Handle("/documents/upload", uploadProtected)
+
+	simpleUploadProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(simpleDocumentUploadHandler.Upload))
+	mux.Handle("/api/documents/upload", simpleUploadProtected)
 
 	searchProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(searchHandler.Search))
 	mux.Handle("/search", searchProtected)

@@ -102,13 +102,42 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 		return s.searchSummaryDirect(ctx, tenantID, query, topK, selectedDocumentIDs)
 	}
 
+	if len(selectedDocumentIDs) > 0 {
+		directChunks, err := s.directChunksByDocumentIDs(ctx, tenantID, selectedDocumentIDs)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("search_document_id=%s direct_chunks_found=%d", firstDocumentID(selectedDocumentIDs), len(directChunks))
+
+		if queryType == "structure" {
+			results := orderResultsByDocumentPosition(structureResults(directChunks, topK))
+			log.Printf("search_document_id=%s direct_chunks_found=%d text_matches_found=%d returned_chunks=%d", firstDocumentID(selectedDocumentIDs), len(directChunks), len(results), len(results))
+			log.Printf("search_mode=text text_matches_found=%d returned_chunks=%d document_id=%s query_type=%s", len(results), len(results), firstDocumentID(selectedDocumentIDs), queryType)
+			return results, nil
+		}
+
+		textResults, textMatchesFound := searchDirectTextMatches(query, topK, directChunks)
+		if len(textResults) > 0 {
+			log.Printf("search_document_id=%s direct_chunks_found=%d text_matches_found=%d returned_chunks=%d", firstDocumentID(selectedDocumentIDs), len(directChunks), textMatchesFound, len(textResults))
+			log.Printf("search_mode=text text_matches_found=%d returned_chunks=%d document_id=%s query_type=%s", textMatchesFound, len(textResults), firstDocumentID(selectedDocumentIDs), queryType)
+			return textResults, nil
+		}
+
+		fallbackResults := firstDocumentChunks(directChunks, 3)
+		log.Printf("search_document_id=%s direct_chunks_found=%d text_matches_found=%d returned_chunks=%d", firstDocumentID(selectedDocumentIDs), len(directChunks), textMatchesFound, len(fallbackResults))
+		log.Printf("search_mode=fallback text_matches_found=%d returned_chunks=%d document_id=%s query_type=%s", textMatchesFound, len(fallbackResults), firstDocumentID(selectedDocumentIDs), queryType)
+		return fallbackResults, nil
+	}
+
 	items, err := s.repo.GetChunksWithEmbeddingsByDocumentIDs(ctx, tenantID, selectedDocumentIDs)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(items) == 0 {
-		return s.searchTextFallback(ctx, tenantID, query, topK, selectedDocumentIDs, 0, precisionMode)
+		results, err := s.searchTextFallback(ctx, tenantID, query, topK, selectedDocumentIDs, 0, precisionMode)
+		log.Printf("search_mode=fallback text_matches_found=%d returned_chunks=%d document_id=%s query_type=%s", len(results), len(results), firstDocumentID(selectedDocumentIDs), queryType)
+		return results, err
 	}
 	if queryType == "structure" {
 		results := structureResults(items, topK)
@@ -131,7 +160,9 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 		generatedVector, err := s.embeddingService.GenerateEmbedding(ctx, query)
 		if err != nil {
 			log.Printf("search_mode=fallback_text query=%q document_id=%s selected_document_ids=%q multi_document_mode=%t modo_precision=%t candidate_chunks=%d reason=embedding_error error=%v", query, firstDocumentID(selectedDocumentIDs), documentIDLog, multiDocumentMode, precisionMode, len(items), err)
-			return s.searchTextFallback(ctx, tenantID, query, topK, selectedDocumentIDs, len(items), precisionMode)
+			results, fallbackErr := s.searchTextFallback(ctx, tenantID, query, topK, selectedDocumentIDs, len(items), precisionMode)
+			log.Printf("search_mode=fallback text_matches_found=%d returned_chunks=%d document_id=%s query_type=%s", len(results), len(results), firstDocumentID(selectedDocumentIDs), queryType)
+			return results, fallbackErr
 		}
 		queryVector = generatedVector
 	}
@@ -183,6 +214,11 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 		fallbackLastResortUsed = len(results) > 0
 		log.Printf("search_fallback_last_resort query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t candidate_chunks=%d final_chunks=%d main_terms_detected=%q main_entity_detected=%q entity_filter_applied=%t entity_extraction_mode=%q reason_entity_rejected=%q fallback_last_resort_used=%t section_query_detected=%t section_term=%q filtered_chunks_count=%d", query, queryType, firstDocumentID(selectedDocumentIDs), documentIDLog, multiDocumentMode, len(items), len(results), strings.Join(queryIntent.MainTerms, ","), queryIntent.MainEntity, entityFilterApplied, queryIntent.EntityExtractionMode, queryIntent.EntityRejectedReason, fallbackLastResortUsed, sectionQueryDetected, sectionTerm, len(results))
 	}
+	if fallbackLastResortUsed {
+		log.Printf("search_mode=fallback text_matches_found=%d returned_chunks=%d document_id=%s query_type=%s", len(results), len(results), firstDocumentID(selectedDocumentIDs), queryType)
+	} else {
+		log.Printf("search_mode=semantic text_matches_found=%d returned_chunks=%d document_id=%s query_type=%s", 0, len(results), firstDocumentID(selectedDocumentIDs), queryType)
+	}
 
 	return results, nil
 }
@@ -231,6 +267,161 @@ func (s *SearchService) searchSummaryDirect(ctx context.Context, tenantID string
 	)
 
 	return items, nil
+}
+
+func (s *SearchService) directChunksByDocumentIDs(ctx context.Context, tenantID string, documentIDs []string) ([]postgres.SearchResult, error) {
+	documentIDs = normalizeDocumentIDs(documentIDs)
+	if len(documentIDs) == 0 {
+		return nil, nil
+	}
+	if len(documentIDs) == 1 {
+		return s.repo.GetChunksByDocumentID(ctx, documentIDs[0])
+	}
+	return s.repo.GetChunksByDocumentIDs(ctx, tenantID, documentIDs)
+}
+
+func searchDirectTextMatches(query string, topK int, chunks []postgres.SearchResult) ([]postgres.SearchResult, int) {
+	topK = normalizeTopK(topK)
+	terms := textSearchTerms(query)
+	if len(terms) == 0 || len(chunks) == 0 {
+		return nil, 0
+	}
+
+	matches := filterTextMatches(query, terms, chunks)
+	matches = orderResultsByDocumentPosition(matches)
+	matchesFound := len(matches)
+	if len(matches) > topK {
+		matches = matches[:topK]
+	}
+	return matches, matchesFound
+}
+
+func firstDocumentChunks(chunks []postgres.SearchResult, limit int) []postgres.SearchResult {
+	if limit <= 0 || len(chunks) == 0 {
+		return nil
+	}
+	ordered := orderResultsByDocumentPosition(chunks)
+	if len(ordered) > limit {
+		ordered = ordered[:limit]
+	}
+	for i := range ordered {
+		ordered[i].Score = 1.0
+	}
+	return ordered
+}
+
+func (s *SearchService) searchTextFirst(ctx context.Context, tenantID string, query string, topK int, documentIDs []string) ([]postgres.SearchResult, int, error) {
+	topK = normalizeTopK(topK)
+	terms := textSearchTerms(query)
+	if len(terms) == 0 {
+		return nil, 0, nil
+	}
+
+	items, err := s.repo.GetChunksByTextByDocumentIDs(ctx, tenantID, documentIDs, strings.Join(terms, " "))
+	if err != nil {
+		return nil, 0, err
+	}
+
+	matches := filterTextMatches(query, terms, items)
+	if len(matches) == 0 {
+		allItems, err := s.repo.GetChunksByDocumentIDs(ctx, tenantID, documentIDs)
+		if err != nil {
+			return nil, 0, err
+		}
+		matches = filterTextMatches(query, terms, allItems)
+	}
+
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].DocumentID == matches[j].DocumentID {
+			if matches[i].ChunkIndex == matches[j].ChunkIndex {
+				return matches[i].ChunkID < matches[j].ChunkID
+			}
+			return matches[i].ChunkIndex < matches[j].ChunkIndex
+		}
+		return matches[i].DocumentID < matches[j].DocumentID
+	})
+
+	matchesFound := len(matches)
+	if len(matches) > topK {
+		matches = matches[:topK]
+	}
+	return matches, matchesFound, nil
+}
+
+func textSearchTerms(query string) []string {
+	normalized := NormalizeSearchText(NormalizeQuestionForRetrieval(query))
+	terms := meaningfulTerms(normalized)
+	if len(terms) == 0 {
+		return nil
+	}
+
+	filtered := make([]string, 0, len(terms))
+	seen := make(map[string]bool)
+	for _, term := range terms {
+		if isSearchIntentWord(term) || seen[term] {
+			continue
+		}
+		seen[term] = true
+		filtered = append(filtered, term)
+	}
+	if len(filtered) > 0 {
+		return filtered
+	}
+	return terms
+}
+
+func isSearchIntentWord(term string) bool {
+	switch term {
+	case "busca", "buscar", "buscame", "encuentra", "encontrar", "dime", "sobre", "documento", "archivo", "texto", "informacion", "consulta", "pregunta", "quiero", "saber":
+		return true
+	default:
+		return false
+	}
+}
+
+func filterTextMatches(query string, terms []string, items []postgres.SearchResult) []postgres.SearchResult {
+	if len(terms) == 0 || len(items) == 0 {
+		return nil
+	}
+
+	matches := make([]postgres.SearchResult, 0, len(items))
+	for i := range items {
+		normalizedContent := NormalizeSearchText(items[i].Content)
+		if !containsAnyTextSearchTerm(normalizedContent, terms) {
+			continue
+		}
+		item := items[i]
+		item.Score = 1.0
+		item.Content = relevantSnippet(query, item.Content)
+		matches = append(matches, item)
+	}
+	return matches
+}
+
+func orderResultsByDocumentPosition(items []postgres.SearchResult) []postgres.SearchResult {
+	ordered := append([]postgres.SearchResult(nil), items...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].DocumentID == ordered[j].DocumentID {
+			if ordered[i].ChunkIndex == ordered[j].ChunkIndex {
+				return ordered[i].ChunkID < ordered[j].ChunkID
+			}
+			return ordered[i].ChunkIndex < ordered[j].ChunkIndex
+		}
+		return ordered[i].DocumentID < ordered[j].DocumentID
+	})
+	return ordered
+}
+
+func containsAnyTextSearchTerm(normalizedContent string, terms []string) bool {
+	if normalizedContent == "" {
+		return false
+	}
+	for _, term := range terms {
+		if countWholeTerm(normalizedContent, term) > 0 || strings.Contains(normalizedContent, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *SearchService) searchTextFallback(ctx context.Context, tenantID string, query string, topK int, documentIDs []string, previousCandidates int, precisionMode bool) ([]postgres.SearchResult, error) {

@@ -37,3 +37,27 @@ func (r *ChunkRepository) SaveChunk(
 
 	return id, nil
 }
+
+func (r *ChunkRepository) SaveChunkWithPage(
+	ctx context.Context,
+	tenantID string,
+	documentID string,
+	documentVersionID string,
+	pageNumber *int,
+	chunkIndex int,
+	content string,
+) (string, error) {
+	id := uuid.New().String()
+
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO chunks (
+			id, tenant_id, document_id, document_version_id, page_number, chunk_index, content, created_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+	`, id, tenantID, documentID, documentVersionID, pageNumber, chunkIndex, content)
+	if err != nil {
+		return "", err
+	}
+
+	return id, nil
+}

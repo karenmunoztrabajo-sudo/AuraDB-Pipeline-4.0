@@ -29,7 +29,13 @@ type ParseResult struct {
 	DetectedType string
 	Extension    string
 	ParserName   string
+	PageTexts    []PageText
 	ExcelData    *ExcelDocument
+}
+
+type PageText struct {
+	PageNumber int
+	Content    string
 }
 
 func ParseDocument(filename string, mimeType string, data []byte) (ParseResult, error) {
@@ -60,7 +66,7 @@ func ParseDocument(filename string, mimeType string, data []byte) (ParseResult, 
 			ParserName:   "csv_table",
 		}, nil
 	case "pdf":
-		content, err := parsePDF(data)
+		content, pageTexts, parserName, err := parsePDF(data)
 		if err != nil {
 			return ParseResult{
 				DetectedType: detectedType,
@@ -72,7 +78,24 @@ func ParseDocument(filename string, mimeType string, data []byte) (ParseResult, 
 			Content:      content,
 			DetectedType: detectedType,
 			Extension:    extension,
-			ParserName:   "pdf_text",
+			ParserName:   parserName,
+			PageTexts:    pageTexts,
+		}, nil
+	case "image":
+		content, err := parseImageOCR(data, extension)
+		if err != nil {
+			return ParseResult{
+				DetectedType: detectedType,
+				Extension:    extension,
+				ParserName:   "image_ocr",
+			}, err
+		}
+		return ParseResult{
+			Content:      content,
+			DetectedType: detectedType,
+			Extension:    extension,
+			ParserName:   "image_ocr",
+			PageTexts:    []PageText{{PageNumber: 1, Content: content}},
 		}, nil
 	case "docx":
 		content, err := parseDOCX(data)
@@ -127,6 +150,8 @@ func detectDocumentType(filename string, mimeType string) string {
 		return "docx"
 	case ".xlsx":
 		return "xlsx"
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff":
+		return "image"
 	}
 
 	mimeType = strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
@@ -141,7 +166,12 @@ func detectDocumentType(filename string, mimeType string) string {
 		return "docx"
 	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
 		return "xlsx"
+	case "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/tiff":
+		return "image"
 	default:
+		if strings.HasPrefix(mimeType, "image/") {
+			return "image"
+		}
 		if mimeType == "" {
 			return "unknown"
 		}
@@ -351,19 +381,19 @@ var (
 	authorSeparatorPattern        = regexp.MustCompile(`\s*(?:,|;| y | and |&)\s*`)
 )
 
-func parsePDF(data []byte) (string, error) {
+func parsePDF(data []byte) (string, []PageText, string, error) {
 	pdftotextPath, lookErr := exec.LookPath("pdftotext")
 	externalParserAvailable := lookErr == nil
 	log.Printf("pdf_external_parser_available=%t", externalParserAvailable)
 	if externalParserAvailable {
 		externalText, err := parsePDFWithPDFToText(data, pdftotextPath)
-		if err == nil && strings.TrimSpace(externalText) != "" {
+		if err == nil && strings.TrimSpace(externalText) != "" && pdfTextQualityScore(externalText) >= 45 {
 			selectedContent := cleanExtractedText(externalText)
 			selectedQuality := pdfTextQualityScore(selectedContent)
 			log.Printf("pdf_parser_used=pdftotext")
 			log.Printf("pdf_text_quality_score=%d", selectedQuality)
 			log.Printf("pdf_text_preview=%q", pdfTextPreview(selectedContent, 300))
-			return selectedContent, nil
+			return selectedContent, nil, "pdf_text_pdftotext", nil
 		}
 		if err != nil {
 			log.Printf("pdf_external_parser_error=%q", err)
@@ -372,19 +402,33 @@ func parsePDF(data []byte) (string, error) {
 		}
 	}
 
+	ocrText, ocrPages, ocrErr := parsePDFWithOCR(data)
+	if ocrErr == nil && strings.TrimSpace(ocrText) != "" {
+		selectedContent := cleanExtractedText(ocrText)
+		selectedQuality := pdfTextQualityScore(selectedContent)
+		log.Printf("pdf_parser_used=ocr")
+		log.Printf("pdf_text_quality_score=%d", selectedQuality)
+		log.Printf("pdf_text_preview=%q", pdfTextPreview(selectedContent, 300))
+		return selectedContent, ocrPages, "pdf_ocr", nil
+	}
+	if ocrErr != nil {
+		log.Printf("pdf_ocr_unavailable_or_failed=true error=%q", ocrErr)
+	}
+
 	reader := bytes.NewReader(data)
 	pdfReader, err := pdf.NewReader(reader, int64(len(data)))
 	if err != nil {
-		return "", fmt.Errorf("error abriendo pdf: %w", err)
+		return "", nil, "pdf_text_internal", fmt.Errorf("error abriendo pdf: %w", err)
 	}
 
 	pageCount := pdfReader.NumPage()
 	if pageCount == 0 {
-		return "", ErrNoExtractableText
+		return "", nil, "pdf_text_internal", ErrNoExtractableText
 	}
 
 	fonts := make(map[string]*pdf.Font)
 	pages := make([]pdfPageContent, 0, pageCount)
+	pageTexts := make([]PageText, 0, pageCount)
 	for pageIndex := 1; pageIndex <= pageCount; pageIndex++ {
 		page := pdfReader.Page(pageIndex)
 		if page.V.IsNull() {
@@ -413,12 +457,15 @@ func parsePDF(data []byte) (string, error) {
 				})
 			}
 			pages = append(pages, pdfPageContent{Rows: pageRows})
+			if pageText := buildPDFFromPages([]pdfPageContent{{Rows: pageRows}}); pageText != "" {
+				pageTexts = append(pageTexts, PageText{PageNumber: pageIndex, Content: pageText})
+			}
 			continue
 		}
 
 		fallbackText, fallbackErr := page.GetPlainText(fonts)
 		if fallbackErr != nil {
-			return "", fmt.Errorf("error extrayendo texto pdf: %w", fallbackErr)
+			return "", nil, "pdf_text_internal", fmt.Errorf("error extrayendo texto pdf: %w", fallbackErr)
 		}
 		pageRows := make([]pdfRow, 0)
 		for _, line := range strings.Split(fallbackText, "\n") {
@@ -429,11 +476,14 @@ func parsePDF(data []byte) (string, error) {
 			pageRows = append(pageRows, pdfRow{Text: line})
 		}
 		pages = append(pages, pdfPageContent{Rows: pageRows})
+		if pageText := buildPDFFromPages([]pdfPageContent{{Rows: pageRows}}); pageText != "" {
+			pageTexts = append(pageTexts, PageText{PageNumber: pageIndex, Content: pageText})
+		}
 	}
 
 	rawContent := buildPDFFromPages(pages)
 	if rawContent == "" {
-		return "", ErrNoExtractableText
+		return "", nil, "pdf_text_internal", ErrNoExtractableText
 	}
 
 	content, stats := cleanExtractedTextWithStats(rawContent)
@@ -459,10 +509,10 @@ func parsePDF(data []byte) (string, error) {
 	log.Printf("pdf_text_preview=%q", pdfTextPreview(selectedContent, 300))
 
 	if strings.TrimSpace(selectedContent) == "" {
-		return "", ErrNoExtractableText
+		return "", nil, selectedParser, ErrNoExtractableText
 	}
 
-	return selectedContent, nil
+	return selectedContent, pageTexts, "pdf_text_internal", nil
 }
 
 func parsePDFWithPDFToText(data []byte, pdftotextPath string) (string, error) {
@@ -485,6 +535,112 @@ func parsePDFWithPDFToText(data []byte, pdftotextPath string) (string, error) {
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
+	}
+	return string(output), nil
+}
+
+func parsePDFWithOCR(data []byte) (string, []PageText, error) {
+	pdftoppmPath, err := exec.LookPath("pdftoppm")
+	if err != nil {
+		return "", nil, fmt.Errorf("pdftoppm no disponible: %w", err)
+	}
+	tesseractPath, err := exec.LookPath("tesseract")
+	if err != nil {
+		return "", nil, fmt.Errorf("tesseract no disponible: %w", err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "auradb-pdf-ocr-*")
+	if err != nil {
+		return "", nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	pdfPath := filepath.Join(tmpDir, "input.pdf")
+	if err := os.WriteFile(pdfPath, data, 0600); err != nil {
+		return "", nil, err
+	}
+
+	prefix := filepath.Join(tmpDir, "page")
+	cmd := exec.Command(pdftoppmPath, "-png", "-r", "200", pdfPath, prefix)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", nil, fmt.Errorf("pdftoppm error: %w output=%s", err, strings.TrimSpace(string(output)))
+	}
+
+	imagePaths, err := filepath.Glob(prefix + "-*.png")
+	if err != nil {
+		return "", nil, err
+	}
+	sort.Strings(imagePaths)
+	if len(imagePaths) == 0 {
+		return "", nil, ErrNoExtractableText
+	}
+
+	pageTexts := make([]PageText, 0, len(imagePaths))
+	var builder strings.Builder
+	for i, imagePath := range imagePaths {
+		text, err := runTesseractImage(tesseractPath, imagePath)
+		if err != nil {
+			log.Printf("pdf_ocr_page_error page=%d error=%v", i+1, err)
+			continue
+		}
+		text = cleanExtractedText(text)
+		if text == "" {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(text)
+		pageTexts = append(pageTexts, PageText{PageNumber: i + 1, Content: text})
+	}
+
+	content := strings.TrimSpace(builder.String())
+	if content == "" {
+		return "", nil, ErrNoExtractableText
+	}
+	return content, pageTexts, nil
+}
+
+func parseImageOCR(data []byte, extension string) (string, error) {
+	tesseractPath, err := exec.LookPath("tesseract")
+	if err != nil {
+		return "", fmt.Errorf("tesseract no disponible: %w", err)
+	}
+
+	if extension == "" {
+		extension = ".img"
+	}
+	tmpFile, err := os.CreateTemp("", "auradb-image-*"+extension)
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmpFile.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return "", err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return "", err
+	}
+
+	text, err := runTesseractImage(tesseractPath, tmpName)
+	if err != nil {
+		return "", err
+	}
+	text = cleanExtractedText(text)
+	if text == "" {
+		return "", ErrNoExtractableText
+	}
+	return text, nil
+}
+
+func runTesseractImage(tesseractPath string, imagePath string) (string, error) {
+	cmd := exec.Command(tesseractPath, imagePath, "stdout", "-l", "spa+eng")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("tesseract error: %w output=%s", err, strings.TrimSpace(string(output)))
 	}
 	return string(output), nil
 }
