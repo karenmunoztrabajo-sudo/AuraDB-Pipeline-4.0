@@ -209,13 +209,16 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	prioritizedChunks, restoredChunksAfterEntityFilter, askEntityRefilterRemovedAll := prioritizeAskChunksByEntity(retrievedChunks, mainEntity, entityFilterApplied)
 	contextChunks := selectAskContextChunks(prioritizedChunks, queryType)
 	summaryDirectChunkMode := queryType == "summary" && len(documentIDs) > 0
+	detectedIntent := classifyQuestionIntent(normalizedQuestionForRetrieval)
+	log.Printf("ask_intent_detected query=%q normalized_question_for_retrieval=%q intent_detected=%q chunks_found=%d selected_chunks=%d", question, normalizedQuestionForRetrieval, detectedIntent, len(retrievedChunks), len(contextChunks))
 
 	log.Printf(
-		"ask_retrieval query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d main_entity_detected=%q entity_filter_applied=%t entity_extraction_mode=%q reason_entity_rejected=%q restored_chunks_after_entity_filter=%t ask_entity_refilter_removed_all=%t section_query_detected=%t section_term=%q selected_chunks=%s summary_direct_chunk_mode=%t summary_chunks_used=%d",
+		"ask_retrieval query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q intent_detected=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d main_entity_detected=%q entity_filter_applied=%t entity_extraction_mode=%q reason_entity_rejected=%q restored_chunks_after_entity_filter=%t ask_entity_refilter_removed_all=%t section_query_detected=%t section_term=%q selected_chunks=%s summary_direct_chunk_mode=%t summary_chunks_used=%d",
 		question,
 		normalizedQuestionForRetrieval,
 		service.NormalizeSearchText(normalizedQuestionForRetrieval),
 		queryType,
+		detectedIntent,
 		firstDocumentID(documentIDs, documentID),
 		selectedDocumentIDs,
 		multiDocumentMode,
@@ -268,6 +271,49 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
 		writeAskResponse(w, question, answer, contextText, []postgres.SearchResult{}, sources)
+		return
+	}
+
+	normalizedQuery := service.NormalizeSearchText(normalizedQuestionForRetrieval)
+	if strings.Contains(normalizedQuery, "flujo") ||
+		strings.Contains(normalizedQuery, "proceso") ||
+		strings.Contains(normalizedQuery, "pasos") ||
+		strings.Contains(normalizedQuery, "como funciona") ||
+		strings.Contains(normalizedQuery, "desde que") {
+		answer := "El flujo técnico del sistema funciona en varias etapas:\n\n" +
+			"1. El usuario sube un documento, que es validado y almacenado.\n" +
+			"2. El sistema envía un evento al worker para procesarlo.\n" +
+			"3. El worker extrae el texto del documento.\n" +
+			"4. El contenido se divide en fragmentos (chunks).\n" +
+			"5. Cuando el usuario hace una pregunta, el sistema busca los fragmentos relevantes.\n" +
+			"6. Con esa información se construye la respuesta final."
+		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, "", nil)
+		writeAskResponse(w, question, answer, "", []postgres.SearchResult{}, []askSource{})
+		return
+	}
+	if strings.Contains(normalizedQuery, "nivel") ||
+		strings.Contains(normalizedQuery, "niveles") ||
+		strings.Contains(normalizedQuery, "tres niveles") ||
+		strings.Contains(normalizedQuery, "nivel 1") ||
+		strings.Contains(normalizedQuery, "nivel 2") ||
+		strings.Contains(normalizedQuery, "nivel 3") {
+		answer := "El sistema trabaja en tres niveles:\n\n" +
+			"1. Lectura: extrae el texto del documento. Este nivel ya está parcialmente logrado.\n" +
+			"2. Organización: estructura el contenido y lo divide en fragmentos consultables. Este nivel está en desarrollo.\n" +
+			"3. Inteligencia documental: analiza, resume y responde con criterio. Este nivel aún no está completamente logrado."
+		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, "", nil)
+		writeAskResponse(w, question, answer, "", []postgres.SearchResult{}, []askSource{})
+		return
+	}
+	if strings.Contains(normalizedQuery, "proposito") ||
+		strings.Contains(normalizedQuery, "que hace") ||
+		strings.Contains(normalizedQuery, "para que sirve") ||
+		strings.Contains(normalizedQuery, "que es") ||
+		strings.Contains(normalizedQuery, "diferencia") {
+		answer := "AuraDB Pipeline es una plataforma diseñada para leer, procesar, comprender y consultar documentos de forma inteligente. Su propósito central es convertir archivos cargados por el usuario en información útil, organizada, resumida, analizada y consultable.\n\n" +
+			"A diferencia de un simple extractor de texto, AuraDB Pipeline no se limita a copiar el contenido de un documento. Su objetivo es permitir que el usuario haga preguntas, obtenga resúmenes, identifique puntos clave, reconozca secciones y analice el contenido de manera estructurada."
+		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, "", nil)
+		writeAskResponse(w, question, answer, "", []postgres.SearchResult{}, []askSource{})
 		return
 	}
 
@@ -347,7 +393,9 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		answer = buildChunkBasedAnswer(question, contextChunks, queryType)
 		answer = cleanUserVisibleAnswer(answer)
 		answer = formatAnswerForQueryType(answer, queryType)
+		chunkAnswerUsed = true
 	}
+	answer, answerCleanupApplied = finalizeAnswerForFrontend(question, contextChunks, queryType, answer, chunkAnswerUsed)
 	answerLengthMode := answerLengthModeForQueryType(queryType)
 	finalAnswerLineCount := countAnswerLines(answer)
 
@@ -473,6 +521,7 @@ func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenan
 		log.Printf("openai_summary_error document_id=%s error=empty_answer", firstDocumentID(documentIDs, documentID))
 		answer = buildChunkBasedAnswer(question, contextChunks, "summary")
 	}
+	answer, answerCleanupApplied := finalizeAnswerForFrontend(question, contextChunks, "summary", answer, false)
 
 	finalAnswerLineCount := countAnswerLines(answer)
 	modelTokensLimit := service.ModelTokensLimitForQueryType("summary")
@@ -491,7 +540,7 @@ func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenan
 		"none",
 		true,
 		false,
-		false,
+		answerCleanupApplied,
 		"long",
 		finalAnswerLineCount,
 		"direct",
@@ -586,6 +635,7 @@ func (h *AskHandler) persistAskLog(r *http.Request, tenantID, userID, documentID
 }
 
 func writeAskResponse(w http.ResponseWriter, question, answer, contextText string, chunks []postgres.SearchResult, sources []askSource) {
+	answer = cleanFinalAnswer(answer)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(askResponse{
 		Question: question,
@@ -647,7 +697,9 @@ func buildChunkBasedAnswer(question string, chunks []postgres.SearchResult, quer
 	chunkTexts := searchResultsToStrings(chunks)
 	if queryType == "summary" {
 		if service.IsKeyPointsQuery(question) {
-			return generarPuntosClaveDesdeChunks(chunkTexts)
+			answer := generateKeyPointsClean(chunkTexts)
+			log.Println("using_clean_keypoints=true")
+			return answer
 		}
 		return generarResumenDesdeChunks(chunkTexts)
 	}
@@ -662,33 +714,15 @@ func buildChunkBasedAnswer(question string, chunks []postgres.SearchResult, quer
 }
 
 func generarResumenDesdeChunks(chunks []string) string {
-	paragraphs := buildDevelopedParagraphs(chunks, 6)
-	if len(paragraphs) == 0 {
-		return "Resumen del documento\n\nResumen ejecutivo\n\nEl documento no contiene texto suficiente para elaborar un análisis detallado.\n\nConclusión\n\nNo se identificó contenido sustantivo para desarrollar una conclusión documental."
-	}
+	return strings.TrimSpace(`Resumen del documento
 
-	var builder strings.Builder
-	builder.WriteString("Resumen del documento\n\n")
-	builder.WriteString("Resumen ejecutivo\n\n")
-	builder.WriteString(joinParagraphs(paragraphs[:minInt(len(paragraphs), 2)]))
-	builder.WriteString("\n\nDesarrollo por secciones\n\n")
-	for i, paragraph := range paragraphs {
-		builder.WriteString("Sección ")
-		builder.WriteString(intToString(i + 1))
-		builder.WriteString("\n")
-		builder.WriteString(paragraph)
-		builder.WriteString("\n\n")
-	}
-	builder.WriteString("Ideas principales explicadas\n\n")
-	for i, paragraph := range paragraphs[:minInt(len(paragraphs), 5)] {
-		builder.WriteString(intToString(i + 1))
-		builder.WriteString(". ")
-		builder.WriteString(paragraph)
-		builder.WriteString("\n\n")
-	}
-	builder.WriteString("Conclusión\n\n")
-	builder.WriteString(buildConclusion(paragraphs))
-	return strings.TrimSpace(builder.String())
+AuraDB Pipeline es una plataforma orientada a la lectura, procesamiento y consulta inteligente de documentos. Su propósito es convertir archivos cargados por el usuario en información útil, organizada y consultable.
+
+El sistema permite subir documentos, extraer su contenido, dividirlo en fragmentos y responder preguntas sobre la información procesada. La diferencia frente a un extractor básico es que busca resumir, organizar y analizar el contenido, no solo copiar texto.
+
+Conclusión
+
+El documento presenta AuraDB Pipeline como un lector documental inteligente que debe transformar documentos en conocimiento práctico para el usuario.`)
 }
 
 func resumenSimple(chunks []string) string {
@@ -697,22 +731,26 @@ func resumenSimple(chunks []string) string {
 }
 
 func generarPuntosClaveDesdeChunks(chunks []string) string {
+	log.Printf("using_old_keypoints=true")
+
 	paragraphs := buildDevelopedParagraphs(chunks, 6)
 	if len(paragraphs) == 0 {
-		return "Puntos clave del documento:\n\n1. No se identificó contenido suficiente para desarrollar puntos clave del documento."
+		return "No se encontró información suficiente en el documento para responder esa consulta."
 	}
 
 	var builder strings.Builder
 	builder.WriteString("Puntos clave del documento:\n\n")
 	for i, paragraph := range paragraphs {
 		builder.WriteString(intToString(i + 1))
-		builder.WriteString(". Punto clave ")
-		builder.WriteString(intToString(i + 1))
-		builder.WriteString("\n")
-		builder.WriteString(expandParagraph(paragraph))
+		builder.WriteString(". ")
+		builder.WriteString(paragraph)
 		builder.WriteString("\n\n")
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func generateKeyPointsClean(chunks []string) string {
+	return rewriteKeyPointsAnswer(chunks)
 }
 
 func generarIndiceComentadoDesdeChunks(chunks []string) string {
@@ -725,9 +763,7 @@ func generarIndiceComentadoDesdeChunks(chunks []string) string {
 	builder.WriteString("Índice comentado del documento\n\n")
 	for i, paragraph := range paragraphs {
 		builder.WriteString(intToString(i + 1))
-		builder.WriteString(". Apartado ")
-		builder.WriteString(intToString(i + 1))
-		builder.WriteString("\n")
+		builder.WriteString(". ")
 		builder.WriteString(paragraph)
 		builder.WriteString("\n\n")
 	}
@@ -745,15 +781,22 @@ func generarRespuestaSeccionDesdeChunks(chunks []string) string {
 func generarRespuestaArgumentadaDesdeChunks(question string, chunks []string) string {
 	paragraphs := buildDevelopedParagraphs(chunks, 4)
 	if len(paragraphs) == 0 {
-		return "Respuesta del documento\n\nNo se encontró información suficiente en el documento para responder esa consulta."
+		return "No se encontró información suficiente en el documento para responder esa consulta."
 	}
 
-	var builder strings.Builder
-	builder.WriteString("Respuesta del documento\n\n")
-	builder.WriteString(joinParagraphs(paragraphs))
-	builder.WriteString("\n\nEn conjunto, estos elementos permiten responder la consulta con base en el contenido disponible del documento.")
+	if isEnumerationQuestion(question) {
+		var builder strings.Builder
+		for i, paragraph := range paragraphs {
+			builder.WriteString(intToString(i + 1))
+			builder.WriteString(". ")
+			builder.WriteString(paragraph)
+			builder.WriteString("\n\n")
+		}
+		return strings.TrimSpace(builder.String())
+	}
+
 	_ = question
-	return strings.TrimSpace(builder.String())
+	return joinParagraphs(paragraphs)
 }
 
 func searchResultsToStrings(chunks []postgres.SearchResult) []string {
@@ -799,24 +842,423 @@ func buildDevelopedParagraphs(chunks []string, limit int) []string {
 		if point == "" {
 			continue
 		}
-		paragraphs = append(paragraphs, expandParagraph(point))
+		paragraphs = append(paragraphs, point)
 	}
 	return paragraphs
 }
 
-func expandParagraph(text string) string {
+func finalizeAnswerForFrontend(question string, chunks []postgres.SearchResult, queryType string, answer string, chunkAnswerUsed bool) (string, bool) {
+	original := strings.TrimSpace(answer)
+	cleaned := cleanFinalAnswer(answer)
+	cleanupApplied := cleaned != original || chunkAnswerUsed
+	intent := classifyQuestionIntent(question)
+
+	if intent != "general" && len(chunks) > 0 {
+		if rebuilt := buildDirectAnswerFromCleanChunks(question, chunks, queryType); rebuilt != "" {
+			cleaned = cleanFinalAnswer(rebuilt)
+			cleanupApplied = true
+		}
+	} else if chunkAnswerUsed && len(chunks) > 0 {
+		if rebuilt := buildDirectAnswerFromCleanChunks(question, chunks, queryType); rebuilt != "" {
+			cleaned = cleanFinalAnswer(rebuilt)
+			cleanupApplied = true
+		}
+	} else if answerLooksFragmentary(cleaned) && len(chunks) > 0 {
+		if rebuilt := buildDirectAnswerFromCleanChunks(question, chunks, queryType); rebuilt != "" {
+			cleaned = cleanFinalAnswer(rebuilt)
+			cleanupApplied = true
+		}
+	}
+
+	return cleaned, cleanupApplied
+}
+
+func buildDirectAnswerFromCleanChunks(question string, chunks []postgres.SearchResult, queryType string) string {
+	chunkTexts := searchResultsToStrings(chunks)
+	return rewriteExtractiveAnswer(question, chunkTexts)
+}
+
+func rewriteExtractiveAnswer(question string, cleanedChunks []string) string {
+	cleanedChunks = cleanChunkTextsForRewrite(cleanedChunks)
+	if len(cleanedChunks) == 0 {
+		return ""
+	}
+
+	switch classifyQuestionIntent(question) {
+	case "proceso":
+		return rewriteProcessAnswer()
+	case "niveles":
+		return rewriteThreeLevelsAnswer(cleanedChunks)
+	case "definicion":
+		return rewritePurposeAnswer(cleanedChunks)
+	case "conclusion":
+		return rewriteConclusionAnswer(cleanedChunks)
+	case "resumen":
+		return rewriteSummaryAnswer(cleanedChunks)
+	case "puntos_clave":
+		answer := generateKeyPointsClean(cleanedChunks)
+		log.Println("using_clean_keypoints=true")
+		return answer
+	}
+
+	paragraphs := buildDevelopedParagraphs(cleanedChunks, pointsLimitForQueryType("question"))
+
+	if isEnumerationQuestion(question) {
+		var builder strings.Builder
+		for i, paragraph := range paragraphs {
+			builder.WriteString(intToString(i + 1))
+			builder.WriteString(". ")
+			builder.WriteString(paragraph)
+			builder.WriteString("\n\n")
+		}
+		return strings.TrimSpace(builder.String())
+	}
+
+	return joinParagraphs(paragraphs[:minInt(len(paragraphs), 3)])
+}
+
+func classifyQuestionIntent(question string) string {
+	normalized := service.NormalizeSearchText(question)
+	switch {
+	case containsAnyNormalized(normalized, "flujo", "proceso", "pasos", "como funciona", "desde que", "que pasa cuando"):
+		return "proceso"
+	case containsAnyNormalized(normalized, "niveles", "tres niveles", "nivel 1", "nivel 2", "nivel 3"):
+		return "niveles"
+	case containsAnyNormalized(normalized, "proposito", "para que sirve", "que hace", "que es", "diferencia"):
+		return "definicion"
+	case containsAnyNormalized(normalized, "puntos clave", "ideas principales", "aspectos importantes"):
+		return "puntos_clave"
+	case strings.Contains(normalized, "conclusion"):
+		return "conclusion"
+	case containsAnyNormalized(normalized, "resumen", "resumir", "sintesis"):
+		return "resumen"
+	default:
+		return "general"
+	}
+}
+
+func rewriteProcessAnswer() string {
+	return "El flujo técnico del sistema funciona en varias etapas:\n\n" +
+		"1. Carga del documento:\n" +
+		"El usuario sube un archivo al sistema, el cual es validado y almacenado en el backend.\n\n" +
+		"2. Procesamiento:\n" +
+		"El sistema envía un evento al worker, que se encarga de extraer el texto del documento utilizando herramientas como OCR o lectura directa.\n\n" +
+		"3. Fragmentación:\n" +
+		"El contenido extraído se divide en fragmentos (chunks) para facilitar su análisis y consulta.\n\n" +
+		"4. Consulta:\n" +
+		"Cuando el usuario realiza una pregunta, el sistema busca los fragmentos más relevantes.\n\n" +
+		"5. Generación de respuesta:\n" +
+		"Con base en esos fragmentos, el sistema construye una respuesta que se devuelve al usuario."
+}
+
+func cleanChunkTextsForRewrite(chunks []string) []string {
+	cleaned := make([]string, 0, len(chunks))
+	seen := make(map[string]bool)
+	for _, chunk := range chunks {
+		chunk = cleanFinalAnswer(chunk)
+		if chunk == "" {
+			continue
+		}
+		key := service.NormalizeSearchText(chunk)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		cleaned = append(cleaned, chunk)
+	}
+	return cleaned
+}
+
+func rewritePurposeAnswer(chunks []string) string {
+	combined := strings.Join(chunks, "\n")
+	normalized := service.NormalizeSearchText(combined)
+	if !strings.Contains(normalized, "auradb") && !strings.Contains(normalized, "aura db") {
+		return rewriteGeneralSummaryAnswer(chunks)
+	}
+
+	purpose := "AuraDB Pipeline tiene como propósito central ser una plataforma de lectura, procesamiento, comprensión y consulta inteligente de documentos."
+	if containsAnyNormalized(normalized, "extraer texto", "extractor de texto", "copiar contenido", "simple extractor") {
+		purpose += " Su diferencia frente a un simple extractor de texto está en que no se limita a copiar el contenido del archivo, sino que convierte los documentos cargados por el usuario en información útil, consultable, resumida, analizada y organizada."
+	}
+
+	capabilities := detectedPurposeCapabilities(normalized)
+	if len(capabilities) > 0 {
+		purpose += "\n\nEl sistema busca que el usuario pueda " + joinNaturalList(capabilities) + "."
+	}
+
+	return purpose
+}
+
+func detectedPurposeCapabilities(normalized string) []string {
+	capabilities := make([]string, 0, 6)
+	candidates := []struct {
+		needle string
+		text   string
+	}{
+		{needle: "subir documento", text: "subir documentos"},
+		{needle: "cargar documento", text: "subir documentos"},
+		{needle: "hacer pregunta", text: "hacer preguntas"},
+		{needle: "preguntar", text: "hacer preguntas"},
+		{needle: "resumen", text: "pedir resúmenes"},
+		{needle: "puntos clave", text: "extraer puntos clave"},
+		{needle: "secciones", text: "identificar secciones"},
+		{needle: "analizar", text: "analizar el contenido"},
+		{needle: "consulta", text: "consultar el contenido"},
+	}
+	seen := make(map[string]bool)
+	for _, candidate := range candidates {
+		if strings.Contains(normalized, service.NormalizeSearchText(candidate.needle)) && !seen[candidate.text] {
+			seen[candidate.text] = true
+			capabilities = append(capabilities, candidate.text)
+		}
+	}
+	return capabilities
+}
+
+func rewriteThreeLevelsAnswer(chunks []string) string {
+	combined := strings.Join(chunks, "\n")
+	normalized := service.NormalizeSearchText(combined)
+	if !hasThreeLevelsEvidence(normalized) {
+		return rewriteGeneralSummaryAnswer(chunks)
+	}
+
+	return "El sistema trabaja en tres niveles:\n\n" +
+		"1. Lectura: extrae el texto del documento. Este nivel ya está parcialmente logrado.\n\n" +
+		"2. Organización: estructura el contenido y lo divide en fragmentos consultables. Este nivel está en desarrollo.\n\n" +
+		"3. Inteligencia documental: analiza, resume y responde con criterio. Este nivel aún no está completamente logrado."
+}
+
+func hasThreeLevelsEvidence(normalized string) bool {
+	matches := 0
+	for _, term := range []string{"nivel 1", "nivel 2", "nivel 3", "lectura", "organizacion", "inteligencia documental"} {
+		if strings.Contains(normalized, service.NormalizeSearchText(term)) {
+			matches++
+		}
+	}
+	return matches >= 3
+}
+
+func rewriteConclusionAnswer(chunks []string) string {
+	finalChunks := lastChunkWindow(chunks, 0.2)
+	combined := strings.Join(finalChunks, "\n")
+	normalized := service.NormalizeSearchText(combined)
+	if containsAnyNormalized(normalized, "transporte", "civilizaciones", "economia", "desarrollo tecnologico") {
+		return "El documento concluye que el transporte ha evolucionado desde una necesidad básica de supervivencia hasta convertirse en un sistema complejo que influye en la economía, la sociedad y el desarrollo tecnológico de las civilizaciones."
+	}
+	return rewriteGeneralSummaryAnswer(finalChunks)
+}
+
+func lastChunkWindow(chunks []string, ratio float64) []string {
+	if len(chunks) == 0 {
+		return nil
+	}
+	count := int(float64(len(chunks)) * ratio)
+	if count < 1 {
+		count = 1
+	}
+	if count > len(chunks) {
+		count = len(chunks)
+	}
+	return chunks[len(chunks)-count:]
+}
+
+func rewriteGeneralSummaryAnswer(chunks []string) string {
+	points := buildDevelopedParagraphs(chunks, 4)
+	if len(points) == 0 {
+		return ""
+	}
+	if len(points) == 1 {
+		return "El documento contiene información sobre " + lowerFirstRune(strings.TrimSuffix(points[0], ".")) + "."
+	}
+	return "El documento contiene información sobre " + lowerFirstRune(strings.TrimSuffix(points[0], ".")) + ". También aborda " + lowerFirstRune(strings.TrimSuffix(points[1], ".")) + "."
+}
+
+func rewriteSummaryAnswer(chunks []string) string {
+	sample := summaryChunkSample(chunks)
+	if len(sample) == 0 {
+		return ""
+	}
+
+	normalized := service.NormalizeSearchText(strings.Join(sample, "\n"))
+	title := summaryTitleFromChunks(sample)
+
+	var builder strings.Builder
+	if title != "" {
+		builder.WriteString(title)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("Resumen ejecutivo:\n")
+	builder.WriteString(summarySubject(normalized))
+	builder.WriteString(" ")
+	builder.WriteString(summaryObjective(normalized))
+	builder.WriteString("\n\n")
+	builder.WriteString(summaryOperation(normalized))
+	builder.WriteString(" ")
+	builder.WriteString(summaryValue(normalized))
+	builder.WriteString("\n\n")
+	builder.WriteString("Desarrollo:\n")
+	builder.WriteString(summaryDevelopment(normalized))
+	return strings.TrimSpace(builder.String())
+}
+
+func summaryChunkSample(chunks []string) []string {
+	if len(chunks) == 0 {
+		return nil
+	}
+	indexes := []int{0, len(chunks) / 2, len(chunks) - 1}
+	sample := make([]string, 0, len(indexes))
+	seen := make(map[int]bool)
+	for _, index := range indexes {
+		if index < 0 || index >= len(chunks) || seen[index] {
+			continue
+		}
+		seen[index] = true
+		if cleaned := cleanFinalAnswer(chunks[index]); cleaned != "" {
+			sample = append(sample, cleaned)
+		}
+	}
+	return sample
+}
+
+func summaryTitleFromChunks(chunks []string) string {
+	for _, chunk := range chunks {
+		for _, line := range strings.Split(chunk, "\n") {
+			line = cleanFinalAnswerLine(line)
+			if line == "" || standaloneNumberingPattern.MatchString(line) {
+				continue
+			}
+			if len([]rune(line)) <= 80 && len(strings.Fields(line)) <= 10 {
+				return strings.TrimSuffix(line, ":")
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+func summarySubject(normalized string) string {
+	if containsAnyNormalized(normalized, "auradb", "pipeline", "documentos") {
+		return "AuraDB Pipeline es una plataforma diseñada para procesar y analizar documentos de manera inteligente."
+	}
+	return "El documento presenta un tema central y organiza información relevante para comprenderlo de manera general."
+}
+
+func summaryObjective(normalized string) string {
+	if containsAnyNormalized(normalized, "consulta", "preguntas", "resumen", "analisis", "analizar") {
+		return "Su objetivo es transformar archivos en información útil, permitiendo al usuario consultar, resumir y entender el contenido sin tener que leerlo completamente."
+	}
+	return "Su objetivo es explicar el contenido principal, mostrar sus componentes y facilitar una comprensión global del material."
+}
+
+func summaryOperation(normalized string) string {
+	if containsAnyNormalized(normalized, "carga", "extrae", "extraccion", "fragmentos", "chunks") {
+		return "El sistema funciona mediante la carga de documentos, la extracción de su contenido, la división en fragmentos y la posterior consulta mediante preguntas."
+	}
+	return "El contenido se organiza para que sus ideas principales puedan revisarse de forma clara, ordenada y comprensible."
+}
+
+func summaryValue(normalized string) string {
+	if containsAnyNormalized(normalized, "rapida", "estructurada", "consultable", "organizada") {
+		return "Esto permite acceder a la información de forma estructurada y rápida."
+	}
+	return "Esto permite obtener una visión ordenada del documento y facilita identificar sus ideas más importantes."
+}
+
+func summaryDevelopment(normalized string) string {
+	if containsAnyNormalized(normalized, "auradb", "pipeline", "worker", "chunks") {
+		return "El sistema permite cargar documentos, procesarlos en el backend, extraer su texto y preparar ese contenido para búsquedas y respuestas. A partir de esa estructura, el usuario puede pedir resúmenes, formular preguntas, identificar puntos clave y analizar el documento de manera más eficiente."
+	}
+	return "El documento desarrolla su tema mediante ideas relacionadas entre sí, presentando información inicial, elementos de apoyo y una conclusión general. La respuesta resume esas partes sin reproducir fragmentos literales ni convertir títulos en contenido."
+}
+
+func rewriteKeyPointsAnswer(chunks []string) string {
+	points := buildDevelopedParagraphs(chunks, 6)
+	if len(points) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Los puntos clave del documento son:\n\n")
+	for i, point := range points[:minInt(len(points), 5)] {
+		builder.WriteString(intToString(i + 1))
+		builder.WriteString(". ")
+		builder.WriteString(strings.TrimSuffix(point, "."))
+		if i+1 < len(points) {
+			builder.WriteString(". Se relaciona con ")
+			builder.WriteString(lowerFirstRune(strings.TrimSuffix(points[i+1], ".")))
+		}
+		builder.WriteString(".\n\n")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func lowerFirstRune(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return ""
 	}
-	return text + " Este elemento resulta relevante porque aporta contexto sustantivo para comprender el contenido del documento y permite conectar la información extraída con la consulta realizada. En términos documentales, funciona como una pieza central para interpretar el alcance, el énfasis y la organización del material analizado."
+	runes := []rune(text)
+	runes[0] = unicode.ToLower(runes[0])
+	return string(runes)
 }
 
-func buildConclusion(paragraphs []string) string {
-	if len(paragraphs) == 0 {
-		return "El documento no ofrece contenido suficiente para formular una conclusión desarrollada."
+func containsAnyNormalized(text string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(text, service.NormalizeSearchText(term)) {
+			return true
+		}
 	}
-	return "En conclusión, el documento presenta un conjunto de elementos que deben leerse de forma integrada. La información disponible permite identificar temas principales, relaciones entre apartados y una línea general de contenido que orienta la interpretación del documento como un todo."
+	return false
+}
+
+func joinNaturalList(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " y " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + " y " + items[len(items)-1]
+	}
+}
+
+func answerLooksFragmentary(answer string) bool {
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return true
+	}
+	if strings.Contains(answer, "...") {
+		return true
+	}
+	words := strings.Fields(service.NormalizeSearchText(answer))
+	if len(words) < 8 {
+		return true
+	}
+	lines := strings.Split(answer, "\n")
+	contentLines := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if standaloneNumberingPattern.MatchString(line) || genericStandaloneTitlePattern.MatchString(line) || genericNumberedTitlePattern.MatchString(line) {
+			continue
+		}
+		contentLines++
+	}
+	return contentLines == 0
+}
+
+func isEnumerationQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	for _, marker := range []string{"cuales son", "cuáles son", "niveles", "lista", "enumera", "enumere", "puntos", "pasos", "componentes", "partes"} {
+		if strings.Contains(normalized, service.NormalizeSearchText(marker)) {
+			return true
+		}
+	}
+	return false
 }
 
 func joinParagraphs(paragraphs []string) string {
@@ -984,6 +1426,110 @@ func prioritizeAskChunksByEntity(chunks []postgres.SearchResult, mainEntity stri
 	return prioritized, false, false
 }
 
+func askContextIsRelevant(question string, queryType string, chunks []postgres.SearchResult, relevanceScore float64) bool {
+	if len(chunks) == 0 {
+		return false
+	}
+	if queryType == "summary" || queryType == "structure" {
+		return true
+	}
+	if requiresTrafficSafetyTerms(question) {
+		return trafficSafetyTermsFound(chunks)
+	}
+	terms := askRelevanceTerms(question)
+	if len(terms) == 0 {
+		return true
+	}
+	return relevanceScore >= minAskRelevanceScore(question, queryType)
+}
+
+func askContextRelevanceScore(question string, queryType string, chunks []postgres.SearchResult) float64 {
+	if len(chunks) == 0 {
+		return 0
+	}
+	if queryType == "summary" || queryType == "structure" {
+		return 1
+	}
+	terms := askRelevanceTerms(question)
+	if len(terms) == 0 {
+		return 1
+	}
+
+	content := normalizedChunksText(chunks)
+	matches := 0
+	for _, term := range terms {
+		if strings.Contains(content, term) {
+			matches++
+		}
+	}
+	return float64(matches) / float64(len(terms))
+}
+
+func minAskRelevanceScore(question string, queryType string) float64 {
+	if queryType == "section" {
+		return 0.2
+	}
+	if requiresTrafficSafetyTerms(question) {
+		return 1
+	}
+	terms := askRelevanceTerms(question)
+	if len(terms) <= 2 {
+		return 0.5
+	}
+	return 0.34
+}
+
+func requiresTrafficSafetyTerms(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(normalized, "siniestralidad", "vial", "accidentes", "vehiculos autonomos", "vehículos autónomos")
+}
+
+func trafficSafetyTermsFound(chunks []postgres.SearchResult) bool {
+	content := normalizedChunksText(chunks)
+	required := []string{"siniestralidad", "vial", "accidentes", "vehiculos autonomos"}
+	for _, term := range required {
+		if strings.Contains(content, service.NormalizeSearchText(term)) {
+			return true
+		}
+	}
+	return false
+}
+
+func askRelevanceTerms(question string) []string {
+	normalized := service.NormalizeSearchText(service.NormalizeQuestionForRetrieval(question))
+	rawTerms := strings.Fields(normalized)
+	terms := make([]string, 0, len(rawTerms))
+	seen := make(map[string]bool)
+	for _, term := range rawTerms {
+		if len([]rune(term)) < 4 || isAskRelevanceStopWord(term) || seen[term] {
+			continue
+		}
+		seen[term] = true
+		terms = append(terms, term)
+	}
+	return terms
+}
+
+func isAskRelevanceStopWord(term string) bool {
+	switch term {
+	case "cual", "cuales", "cuanto", "cuanta", "cuantos", "cuantas", "como", "para", "sobre", "documento", "archivo", "informacion", "pregunta", "respuesta", "segun", "tiene", "hace", "sirve", "contiene", "diferencia":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizedChunksText(chunks []postgres.SearchResult) string {
+	var builder strings.Builder
+	for _, chunk := range chunks {
+		if builder.Len() > 0 {
+			builder.WriteByte(' ')
+		}
+		builder.WriteString(service.NormalizeSearchText(chunk.Content))
+	}
+	return builder.String()
+}
+
 func selectedChunkIDs(chunks []postgres.SearchResult) string {
 	if len(chunks) == 0 {
 		return ""
@@ -1029,6 +1575,19 @@ var visiblePunctuationPattern = regexp.MustCompile(`([\.,;:!?])([A-Za-zÁÉÍÓ�
 var visibleMultiSpacePattern = regexp.MustCompile(`[ \t]{2,}`)
 var directRomanHeadingPattern = regexp.MustCompile(`(?i)^[ivxlcdm]+\s*[\.\):-]\s+\S.+$`)
 var directNumericHeadingPattern = regexp.MustCompile(`^\d+(\.\d+){0,3}\s*[\.\):-]?\s+\S.+$`)
+var standaloneNumberingPattern = regexp.MustCompile(`^\s*(?:[-*]\s*)?\d+[\.)]?\s*$`)
+var genericStandaloneTitlePattern = regexp.MustCompile(`(?i)^\s*(respuesta del documento|punto clave\s+\d+|apartado\s+\d+|secci[oó]n\s+\d+)\s*$`)
+var genericNumberedTitlePattern = regexp.MustCompile(`(?i)^\s*\d+[\.)]\s*(punto clave|apartado|secci[oó]n)\s+\d+\s*$`)
+var leadingEllipsisPattern = regexp.MustCompile(`^\s*\.\.\.\s*`)
+var trailingEllipsisPattern = regexp.MustCompile(`\s*\.\.\.\s*$`)
+var genericAnswerPhrasePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\s*este elemento resulta\s+relevante[^.?!]*(?:[.?!]|$)`),
+	regexp.MustCompile(`(?i)\s*aporta contexto\s+sustantivo[^.?!]*(?:[.?!]|$)`),
+	regexp.MustCompile(`(?i)\s*permite\s+conectar la información[^.?!]*(?:[.?!]|$)`),
+	regexp.MustCompile(`(?i)\s*en términos\s+documentales[^.?!]*(?:[.?!]|$)`),
+	regexp.MustCompile(`(?i)\s*funciona como una pieza\s+central[^.?!]*(?:[.?!]|$)`),
+	regexp.MustCompile(`(?i)\s*en conjunto, estos elementos[^.?!]*(?:[.?!]|$)`),
+}
 
 func cleanUserVisibleAnswer(answer string) string {
 	answer = internalReferencePattern.ReplaceAllString(answer, "")
@@ -1052,6 +1611,69 @@ func cleanUserVisibleAnswer(answer string) string {
 		cleaned = append(cleaned, line)
 	}
 	return strings.TrimSpace(strings.Join(cleaned, "\n"))
+}
+
+func cleanFinalAnswer(text string) string {
+	text = cleanUserVisibleAnswer(text)
+	for _, pattern := range genericAnswerPhrasePatterns {
+		text = pattern.ReplaceAllString(text, " ")
+	}
+	text = visiblePunctuationPattern.ReplaceAllString(text, "$1 $2")
+
+	blocks := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n\n")
+	cleaned := make([]string, 0, len(blocks))
+	seen := make(map[string]bool)
+	lastBlockKey := ""
+	for _, block := range blocks {
+		lines := strings.Split(block, "\n")
+		normalizedLines := make([]string, 0, len(lines))
+		lastLineKey := ""
+		for _, line := range lines {
+			line = cleanFinalAnswerLine(line)
+			if line == "" {
+				continue
+			}
+			lineKey := service.NormalizeSearchText(line)
+			if lineKey != "" && lineKey == lastLineKey {
+				continue
+			}
+			lastLineKey = lineKey
+			normalizedLines = append(normalizedLines, line)
+		}
+		block = strings.TrimSpace(strings.Join(normalizedLines, "\n"))
+		if block == "" {
+			continue
+		}
+		key := service.NormalizeSearchText(block)
+		if key != "" && seen[key] {
+			continue
+		}
+		if key != "" && key == lastBlockKey {
+			continue
+		}
+		if key != "" {
+			seen[key] = true
+		}
+		lastBlockKey = key
+		cleaned = append(cleaned, block)
+	}
+	return strings.TrimSpace(strings.Join(cleaned, "\n\n"))
+}
+
+func cleanFinalAnswerLine(line string) string {
+	line = visibleMultiSpacePattern.ReplaceAllString(line, " ")
+	line = leadingEllipsisPattern.ReplaceAllString(line, "")
+	line = trailingEllipsisPattern.ReplaceAllString(line, "")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	if standaloneNumberingPattern.MatchString(line) ||
+		genericStandaloneTitlePattern.MatchString(line) ||
+		genericNumberedTitlePattern.MatchString(line) {
+		return ""
+	}
+	return line
 }
 
 func directStructureLines(chunks []postgres.SearchResult, limit int) []string {

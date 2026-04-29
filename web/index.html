@@ -228,6 +228,25 @@
       font-size: 15px;
     }
 
+    .intro-block {
+      margin-bottom: 22px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .intro-block h2 {
+      margin: 0 0 8px;
+      font-size: 26px;
+      line-height: 1.2;
+    }
+
+    .intro-block p {
+      max-width: 720px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
     .quick-actions {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -439,6 +458,16 @@
       font-size: 14px;
     }
 
+    .status.ready {
+      color: var(--accent-strong);
+      font-weight: 700;
+    }
+
+    .status.processing {
+      color: #7a5c00;
+      font-weight: 700;
+    }
+
     .error {
       color: var(--danger);
       font-weight: 700;
@@ -593,6 +622,18 @@
       background: linear-gradient(180deg, #ffffff 0%, #fbfdfc 100%);
       box-shadow: 0 14px 34px rgba(8, 117, 104, 0.08);
       overflow: auto;
+      animation: answerEnter 220ms ease-out;
+    }
+
+    @keyframes answerEnter {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .answer-head {
@@ -600,7 +641,7 @@
       align-items: center;
       justify-content: flex-start;
       gap: 12px;
-      margin-bottom: 12px;
+      margin-bottom: 16px;
     }
 
     .answer {
@@ -614,12 +655,90 @@
       color: #20303c;
     }
 
+    .formatted-answer {
+      display: grid;
+      gap: 18px;
+    }
+
+    .formatted-block {
+      padding-top: 16px;
+      border-top: 1px solid #e3ebe8;
+    }
+
+    .formatted-block:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .formatted-heading {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .formatted-paragraph {
+      margin: 0 0 12px;
+      overflow-wrap: anywhere;
+      color: #20303c;
+      font-size: 16px;
+      line-height: 1.72;
+    }
+
+    .formatted-paragraph:last-child {
+      margin-bottom: 0;
+    }
+
+    .formatted-list {
+      margin: 0;
+      padding-left: 24px;
+      color: #20303c;
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    .formatted-list li {
+      margin: 0 0 10px;
+      padding-left: 4px;
+    }
+
+    .formatted-list li:last-child {
+      margin-bottom: 0;
+    }
+
+    .answer-section {
+      padding: 14px 0;
+      border-top: 1px solid #e3ebe8;
+    }
+
+    .answer-section:first-of-type {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .answer-label {
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .answer-question {
+      margin: 0;
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
     .answer-title {
       margin: 0;
-      font-size: 13px;
+      font-size: 16px;
       font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      letter-spacing: 0;
       color: var(--accent);
     }
 
@@ -801,8 +920,13 @@
 
   <div id="workspace" class="workspace">
     <section class="main-panel" id="queryPanel">
+      <div class="intro-block">
+        <h2>AuraDB Pipeline — Analiza tus documentos con inteligencia</h2>
+        <p>Sube un documento y obtén resúmenes, puntos clave y respuestas sin leerlo completo.</p>
+      </div>
+
       <h2>Consulta tu documento</h2>
-      <p class="panel-intro">Sube un archivo y consulta con acciones rápidas o preguntas libres.</p>
+      <p class="panel-intro">Elige una sugerencia o escribe una pregunta libre sobre el documento actual.</p>
 
       <div class="quick-actions">
         <button type="button" class="quick-action" onclick="setQuickQuestion('summary')">
@@ -817,9 +941,9 @@
           <strong>Puntos clave</strong>
           <span>Extrae lo más importante rápidamente.</span>
         </button>
-        <button type="button" class="quick-action" onclick="setQuickQuestion('ask')">
-          <strong>Preguntar al documento</strong>
-          <span>Escribe una duda puntual y consulta.</span>
+        <button type="button" class="quick-action" onclick="setQuickQuestion('technical')">
+          <strong>Flujo técnico</strong>
+          <span>Describe procesos, pasos o arquitectura.</span>
         </button>
       </div>
 
@@ -831,11 +955,14 @@
           </div>
           
         </div>
-        <textarea id="askQuery" placeholder="Escribe lo que quieres saber"></textarea>
-        <!-- <div class="example-row">
-          <button type="button" class="example-chip" onclick="applyExampleQuestion('¿Qué contiene el documento?')">¿Qué contiene el documento?</button>
+        <textarea id="askQuery" placeholder="Haz una pregunta sobre tu documento..."></textarea>
+        <div class="example-row">
           <button type="button" class="example-chip" onclick="applyExampleQuestion('Resume este documento')">Resume este documento</button>
-        </div> -->
+          <button type="button" class="example-chip" onclick="applyExampleQuestion('¿Qué contiene el documento?')">¿Qué contiene el documento?</button>
+          <button type="button" class="example-chip" onclick="applyExampleQuestion('Extrae los puntos clave')">Extrae los puntos clave</button>
+          <button type="button" class="example-chip" onclick="applyExampleQuestion('¿Cuál es el propósito del documento?')">¿Cuál es el propósito del documento?</button>
+          <button type="button" class="example-chip" onclick="applyExampleQuestion('Describe el flujo técnico')">Describe el flujo técnico</button>
+        </div>
         <div class="composer-footer">
           <div class="file-area">
             <input type="file" id="file" style="display:none" />
@@ -1141,7 +1268,7 @@ function initializeFreshAppState() {
   clearPersistedDocumentState();
   clearPersistedQueryState();
   renderCurrentDocumentName();
-  setUploadMessage("", false);
+  setUploadMessage("Sin documento cargado.", false);
 }
 
 function clearDocumentState() {
@@ -1207,7 +1334,9 @@ function setQuickQuestion(mode) {
   } else if (mode === "structure") {
     input.value = "¿Qué contiene el documento?";
   } else if (mode === "keypoints") {
-    input.value = "Extrae los puntos clave del documento";
+    input.value = "Extrae los puntos clave";
+  } else if (mode === "technical") {
+    input.value = "Describe el flujo técnico";
   } else {
     input.value = "";
   }
@@ -1260,32 +1389,225 @@ function clearAnswer() {
   showAnswerFeedback("");
 }
 
-function exportAnswer() {
-  const answerText = sessionStorage.getItem(LAST_ANSWER_TEXT_KEY) || "";
-  if (!answerText) {
-    return;
-  }
-  const now = new Date();
-  const stamp = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, "0"),
-    String(now.getDate()).padStart(2, "0")
-  ].join("") + "-" + [
-    String(now.getHours()).padStart(2, "0"),
-    String(now.getMinutes()).padStart(2, "0")
-  ].join("");
-  const blob = new Blob([answerText], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = "respuesta-" + stamp + ".txt";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+function newQuery() {
+  const input = document.getElementById('askQuery');
+  input.value = "";
+  clearAnswer();
+  input.focus();
 }
 
-function renderAnswer(answer) {
+function normalizeForIntent(text) {
+  return String(text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function detectAnswerIntent(question) {
+  const normalized = normalizeForIntent(question);
+  if (normalized.includes("flujo")) {
+    return "flow";
+  }
+  if (normalized.includes("resume") || normalized.includes("resumen")) {
+    return "summary";
+  }
+  if (
+    normalized.includes("que es") ||
+    normalized.includes("define") ||
+    normalized.includes("definicion") ||
+    normalized.includes("que significa")
+  ) {
+    return "definition";
+  }
+  return "default";
+}
+
+function stripTechnicalHeading(text) {
+  return String(text || "")
+    .replace(/^\s*(respuesta|respuesta generada|definicion|definición|contexto|analisis|análisis|contenido)\s*:\s*/i, "")
+    .trim();
+}
+
+function cleanAnswerText(text) {
+  return String(text || "")
+    .replace(/\r/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function splitSentences(text) {
+  return String(text || "")
+    .replace(/\n+/g, " ")
+    .match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
+}
+
+function splitIntoParagraphs(text) {
+  const cleaned = cleanAnswerText(text);
+  if (!cleaned) {
+    return [];
+  }
+
+  const explicitParagraphs = cleaned
+    .split(/\n\s*\n/)
+    .map(function (part) { return stripTechnicalHeading(part); })
+    .filter(Boolean);
+
+  if (explicitParagraphs.length > 1) {
+    return explicitParagraphs;
+  }
+
+  const sentences = cleaned
+    .match(/[^.!?]+[.!?]+|[^.!?]+$/g)
+    .map(function (part) { return stripTechnicalHeading(part); })
+    .filter(Boolean);
+
+  if (sentences.length <= 2) {
+    return [stripTechnicalHeading(cleaned)];
+  }
+
+  const paragraphs = [];
+  for (let i = 0; i < sentences.length; i += 2) {
+    paragraphs.push(sentences.slice(i, i + 2).join(" "));
+  }
+  return paragraphs;
+}
+
+function splitSummaryAndConclusion(answer) {
+  const cleaned = cleanAnswerText(answer);
+  const conclusionMatch = cleaned.match(/(?:^|\n)\s*(conclusi[oó]n)\s*:?\s*/i);
+  if (conclusionMatch && typeof conclusionMatch.index === "number") {
+    const summary = cleaned.slice(0, conclusionMatch.index).trim();
+    const conclusion = cleaned.slice(conclusionMatch.index + conclusionMatch[0].length).trim();
+    return {
+      summary: splitIntoParagraphs(summary),
+      conclusion: splitIntoParagraphs(conclusion)
+    };
+  }
+
+  const paragraphs = splitIntoParagraphs(cleaned);
+  if (paragraphs.length > 1) {
+    return {
+      summary: paragraphs.slice(0, -1),
+      conclusion: [paragraphs[paragraphs.length - 1]]
+    };
+  }
+
+  const sentences = splitSentences(cleaned)
+    .map(function (sentence) { return stripTechnicalHeading(sentence); })
+    .filter(Boolean);
+  if (sentences.length > 1) {
+    return {
+      summary: sentences.slice(0, -1),
+      conclusion: [sentences[sentences.length - 1]]
+    };
+  }
+
+  return {
+    summary: paragraphs.length ? paragraphs : [cleaned],
+    conclusion: []
+  };
+}
+
+function splitFlowSteps(answer) {
+  const cleaned = cleanAnswerText(answer);
+  const lineItems = cleaned
+    .split(/\n+/)
+    .map(function (line) {
+      return line.replace(/^\s*(?:\d+[\).\-\s]+|[-*]\s+)/, "").trim();
+    })
+    .filter(Boolean)
+    .filter(function (line) {
+      return !/^flujo del sistema\s*:?\s*$/i.test(line);
+    });
+
+  if (lineItems.length > 1) {
+    return lineItems;
+  }
+
+  const steps = [];
+  splitIntoParagraphs(cleaned).forEach(function (paragraph) {
+    splitSentences(paragraph)
+      .map(function (step) { return stripTechnicalHeading(step); })
+      .filter(Boolean)
+      .forEach(function (step) {
+        steps.push(step);
+      });
+  });
+  return steps.length ? steps : [cleaned];
+}
+
+function appendHeadingBlock(container, heading, paragraphs) {
+  if (!paragraphs || !paragraphs.length) {
+    return;
+  }
+
+  const block = document.createElement('div');
+  block.className = "formatted-block";
+
+  const title = document.createElement('h4');
+  title.className = "formatted-heading";
+  title.textContent = heading;
+  block.appendChild(title);
+
+  paragraphs.forEach(function (paragraph) {
+    const p = document.createElement('p');
+    p.className = "formatted-paragraph";
+    p.textContent = paragraph;
+    block.appendChild(p);
+  });
+
+  container.appendChild(block);
+}
+
+function appendParagraphs(container, paragraphs) {
+  paragraphs.forEach(function (paragraph) {
+    const p = document.createElement('p');
+    p.className = "formatted-paragraph";
+    p.textContent = paragraph;
+    container.appendChild(p);
+  });
+}
+
+function buildFormattedAnswer(answer, question) {
+  const intent = detectAnswerIntent(question);
+  const container = document.createElement('div');
+  container.className = "formatted-answer";
+
+  if (intent === "summary") {
+    const parts = splitSummaryAndConclusion(answer);
+    appendHeadingBlock(container, "Resumen del documento", parts.summary);
+    if (parts.conclusion.length) {
+      appendHeadingBlock(container, "Conclusión", parts.conclusion);
+    }
+    return container;
+  }
+
+  if (intent === "flow") {
+    const block = document.createElement('div');
+    block.className = "formatted-block";
+
+    const title = document.createElement('h4');
+    title.className = "formatted-heading";
+    title.textContent = "Flujo del sistema";
+    block.appendChild(title);
+
+    const list = document.createElement('ol');
+    list.className = "formatted-list";
+    splitFlowSteps(answer).forEach(function (step) {
+      const item = document.createElement('li');
+      item.textContent = step;
+      list.appendChild(item);
+    });
+    block.appendChild(list);
+    container.appendChild(block);
+    return container;
+  }
+
+  appendParagraphs(container, splitIntoParagraphs(answer));
+  return container;
+}
+
+function renderAnswer(answer, question) {
   const container = document.getElementById('askResult');
   container.innerHTML = "";
   if (!answer) {
@@ -1300,22 +1622,42 @@ function renderAnswer(answer) {
 
   const answerTitle = document.createElement('h3');
   answerTitle.className = "answer-title";
-  answerTitle.textContent = "Respuesta";
+  answerTitle.textContent = "Respuesta generada";
   answerHead.appendChild(answerTitle);
   wrapper.appendChild(answerHead);
 
-  const answerText = document.createElement('p');
-  answerText.className = "answer";
-  answerText.textContent = answer;
-  wrapper.appendChild(answerText);
+  const questionSection = document.createElement('div');
+  questionSection.className = "answer-section";
+
+  const questionLabel = document.createElement('p');
+  questionLabel.className = "answer-label";
+  questionLabel.textContent = "Pregunta";
+  questionSection.appendChild(questionLabel);
+
+  const questionText = document.createElement('p');
+  questionText.className = "answer-question";
+  questionText.textContent = question || document.getElementById('askQuery').value.trim() || "Consulta al documento";
+  questionSection.appendChild(questionText);
+  wrapper.appendChild(questionSection);
+
+  const responseSection = document.createElement('div');
+  responseSection.className = "answer-section";
+
+  const responseLabel = document.createElement('p');
+  responseLabel.className = "answer-label";
+  responseLabel.textContent = "Respuesta";
+  responseSection.appendChild(responseLabel);
+
+  responseSection.appendChild(buildFormattedAnswer(answer, question));
+  wrapper.appendChild(responseSection);
 
   const actions = document.createElement('div');
   actions.className = "answer-actions";
 
   [
     ["Copiar respuesta", copyAnswer],
-    ["Limpiar respuesta", clearAnswer],
-    ["Exportar .txt", exportAnswer]
+    ["Limpiar", clearAnswer],
+    ["Nueva consulta", newQuery]
   ].forEach(function (entry) {
     const button = document.createElement('button');
     button.type = "button";
@@ -1333,6 +1675,10 @@ function renderAnswer(answer) {
   wrapper.appendChild(feedback);
 
   container.appendChild(wrapper);
+  wrapper.scrollIntoView({
+    behavior: "smooth",
+    block: "start"
+  });
 }
 
 function getFavoriteHistoryIds() {
@@ -1437,12 +1783,12 @@ async function uploadSelectedFile() {
   }
 
   try {
-    setUploadMessage("Subiendo documento...", false);
+    setUploadMessage("Procesando documento...", false, "processing");
 
     const formData = new FormData();
     formData.append("file", file);
 
-    const res = await fetch("http://localhost:8080/documents/upload", {
+    const res = await fetch(API + "/api/documents/upload", {
       method: "POST",
       headers: {
         Authorization: "Bearer " + token
@@ -1454,23 +1800,35 @@ async function uploadSelectedFile() {
     console.log("upload response:", res.status, text);
 
     if (!res.ok) {
+      if (res.status === 401) {
+        clearAuthToken();
+        showLogin();
+        throw new Error("Sesión inválida o expirada. Inicia sesión de nuevo.");
+      }
       throw new Error(text || "Upload failed");
     }
 
-    const match = text.match(/document_id=([0-9a-fA-F-]{36})/);
+    let documentId = "";
+    try {
+      const data = JSON.parse(text);
+      documentId = data.id || data.document_id || "";
+    } catch (err) {
+      const match = text.match(/document_id=([0-9a-fA-F-]{36})/);
+      documentId = match ? match[1] : "";
+    }
 
-    if (!match) {
+    if (!documentId) {
       throw new Error("No se encontró document_id en la respuesta: " + text);
     }
 
-    currentDocumentId = match[1];
+    currentDocumentId = documentId;
     currentDocumentName = file.name;
 
     sessionStorage.setItem("auradb.currentDocumentId", currentDocumentId);
     sessionStorage.setItem("auradb.currentDocumentName", currentDocumentName);
 
     renderCurrentDocumentName();
-    setUploadMessage("Documento cargado. Ya puedes consultarlo.", false);
+    setUploadMessage("Documento listo para consultar", false, "ready");
 
   } catch (err) {
     console.error("upload error:", err);
@@ -1509,11 +1867,15 @@ function renderCurrentDocumentName() {
   container.textContent = currentDocumentName;
 }
 
-function setUploadMessage(message, isError) {
+function setUploadMessage(message, isError, state) {
   const el = document.getElementById("uploadResult");
   if (!el) return;
   el.textContent = message;
-  el.className = isError ? "status error" : "status";
+  if (isError) {
+    el.className = "status error";
+    return;
+  }
+  el.className = state ? "status " + state : "status";
 }
 
 async function searchDocs() {
@@ -1522,7 +1884,7 @@ async function searchDocs() {
 
 async function askDocument() {
   const container = document.getElementById('askResult');
-  setLoadingState(container, "Buscando respuesta...");
+  setLoadingState(container, "Analizando documento...");
   persistLastAnswer("");
 
   try {
@@ -1551,16 +1913,17 @@ async function askDocument() {
     });
 
     if (!res.ok) {
-      renderAnswer("No se encontró información suficiente en el documento para responder esa consulta.");
+      renderAnswer("No se encontró información suficiente en el documento para responder esa consulta.", question);
       return;
     }
 
     const data = await res.json();
-    renderAnswer(data.answer || "");
+    renderAnswer(data.answer || "", question);
     persistLastAnswer(data.answer || "");
     loadAskHistory();
   } catch (err) {
-    renderAnswer("No se encontró información suficiente en el documento para responder esa consulta.");
+    const question = document.getElementById('askQuery').value.trim();
+    renderAnswer("No se encontró información suficiente en el documento para responder esa consulta.", question);
   }
 }
 

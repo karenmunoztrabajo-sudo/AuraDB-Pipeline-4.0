@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -52,6 +53,7 @@ func (h *SimpleDocumentUploadHandler) Upload(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "no autorizado", http.StatusUnauthorized)
 		return
 	}
+	log.Printf("upload_attempt endpoint=/api/documents/upload tenant_id=%s user_id=%s", ipcCtx.TenantID, ipcCtx.UserID)
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxSimpleUploadBytes+1024)
 	if err := r.ParseMultipartForm(maxSimpleUploadBytes); err != nil {

@@ -57,6 +57,7 @@ func main() {
 		log.Fatal("error conectando a nats:", err)
 	}
 	defer nc.Close()
+	log.Printf("worker_nats_url=%s", cfg.NatsURL)
 
 	jobRepo := postgres.NewJobRepository(dbPool)
 	parserRepo := postgres.NewParserRepository(dbPool)
@@ -67,7 +68,8 @@ func main() {
 
 	fmt.Println("Worker Auradb iniciado y escuchando eventos...")
 
-	_, err = nc.Subscribe("documents.uploaded", func(msg *nats.Msg) {
+	const uploadSubject = "documents.uploaded"
+	_, err = nc.Subscribe(uploadSubject, func(msg *nats.Msg) {
 		fmt.Println("\n--- Nuevo evento recibido ---")
 
 		var event UploadEvent
@@ -339,6 +341,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Printf("subscribed_subject=%s", uploadSubject)
 
 	select {}
 }

@@ -1,6 +1,8 @@
 package messaging
 
 import (
+	"time"
+
 	"auradb-pipeline/internal/config"
 
 	"github.com/nats-io/nats.go"
@@ -22,5 +24,8 @@ func NewNatsRepository(cfg config.Config) (*NatsRepository, error) {
 }
 
 func (r *NatsRepository) Publish(subject string, data []byte) error {
-	return r.conn.Publish(subject, data)
+	if err := r.conn.Publish(subject, data); err != nil {
+		return err
+	}
+	return r.conn.FlushTimeout(5 * time.Second)
 }

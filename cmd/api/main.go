@@ -54,13 +54,13 @@ func main() {
 	if err != nil {
 		log.Fatal("error conectando a nats:", err)
 	}
+	log.Printf("api_nats_url=%s", cfg.NatsURL)
 
 	docRepo := postgres.NewDocumentRepository(dbPool)
 	jobRepo := postgres.NewJobRepository(dbPool)
 	auditRepo := postgres.NewAuditRepository(dbPool)
 
 	documentHandler := apphttp.NewDocumentHandler(docRepo, jobRepo, auditRepo, minioRepo, natsRepo)
-	simpleDocumentUploadHandler := apphttp.NewSimpleDocumentUploadHandler(docRepo, "uploads/documents")
 
 	searchRepo := postgres.NewSearchRepository(dbPool)
 	embeddingService := service.NewOllamaEmbeddingService(cfg)
@@ -114,8 +114,8 @@ func main() {
 	uploadProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(documentHandler.Upload))
 	mux.Handle("/documents/upload", uploadProtected)
 
-	simpleUploadProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(simpleDocumentUploadHandler.Upload))
-	mux.Handle("/api/documents/upload", simpleUploadProtected)
+	apiUploadProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(documentHandler.Upload))
+	mux.Handle("/api/documents/upload", apiUploadProtected)
 
 	searchProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(searchHandler.Search))
 	mux.Handle("/search", searchProtected)

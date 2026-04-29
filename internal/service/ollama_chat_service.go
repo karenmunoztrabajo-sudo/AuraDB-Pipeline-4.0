@@ -194,26 +194,26 @@ func promptConfigForQueryType(queryType string) answerPromptConfig {
 	switch queryType {
 	case "summary":
 		return answerPromptConfig{
-			SystemPrompt: "Actúa como analista documental experto. Elabora un resumen amplio, profesional y estructurado usando únicamente el contexto recuperado. No produzcas una lista mínima: desarrolla ideas, relaciones y conclusiones con profundidad.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Estructura la respuesta con: Título, Resumen ejecutivo, Desarrollo por secciones, Ideas principales explicadas y Conclusión.\n- El resumen ejecutivo debe tener varios párrafos sustantivos.\n- En el desarrollo por secciones, explica qué aborda cada parte y por qué es relevante.\n- Las ideas principales deben estar explicadas, no solo enumeradas.\n- No uses referencias internas, identificadores ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.\n- Si el contexto es limitado, desarrolla lo disponible sin mencionar limitaciones técnicas.",
+			SystemPrompt: "Resume el documento usando únicamente el contexto recuperado. Reescribe y sintetiza información visible del documento sin agregar comentarios genéricos.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- La respuesta solo puede contener texto reescrito del documento o síntesis directa de ese texto.\n- No agregues explicaciones de relevancia, función, importancia, aporte o interpretación si no están explícitas en el contexto.\n- No repitas estructuras ni concatenes frases fijas.\n- No uses referencias internas, identificadores ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
 			NumPredict:   1800,
 		}
 	case "section":
 		return answerPromptConfig{
-			SystemPrompt: "Responde como analista documental sobre la sección solicitada usando únicamente el contexto. Desarrolla una explicación profesional, con contexto, alcance e implicaciones dentro del documento.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No mezcles contenido ajeno a la sección si no está respaldado por el contexto.\n- Responde en párrafos completos o en apartados breves con explicación.\n- Evita listas de frases sueltas.\n- No incluyas referencias internas ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
+			SystemPrompt: "Responde sobre la sección solicitada usando únicamente el contexto. Sintetiza de forma directa el texto recuperado.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No mezcles contenido ajeno a la sección si no está respaldado por el contexto.\n- La respuesta solo puede contener texto reescrito del documento o síntesis directa de ese texto.\n- No agregues explicaciones genéricas ni interpretación documental.\n- No incluyas referencias internas ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
 			NumPredict:   900,
 		}
 	case "structure":
 		return answerPromptConfig{
-			SystemPrompt: "Construye un índice comentado del documento usando solo el contexto. Identifica secciones, temas, hojas, columnas o bloques y explica brevemente qué contiene cada uno.",
-			UserRules:    "Reglas obligatorias:\n- Extrae estructura o temas visibles en el contexto.\n- Presenta un índice comentado, no una lista mínima.\n- Cada elemento debe incluir una explicación de su contenido o función.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.",
+			SystemPrompt: "Extrae la estructura visible del documento usando solo el contexto. Enumera secciones, temas, hojas, columnas o bloques cuando aparezcan.",
+			UserRules:    "Reglas obligatorias:\n- Extrae estructura o temas visibles en el contexto.\n- Describe cada elemento solo con información presente en el documento.\n- No agregues comentarios sobre función, importancia o utilidad si no están escritos en el contexto.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.",
 			NumPredict:   850,
 		}
 	default:
 		return answerPromptConfig{
-			SystemPrompt: "Responde como analista documental experto usando solo el contexto recuperado. Da una respuesta argumentada, clara y profesional, con párrafos completos y explicación suficiente.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Responde en párrafos completos, no en frases sueltas.\n- Explica el contexto, la respuesta y sus matices dentro del documento.\n- No inventes información ni agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.\n- Si la información es parcial, responde con lo que el documento permite afirmar.",
+			SystemPrompt: "Responde usando solo el contexto recuperado. La respuesta debe ser una extracción reescrita o una síntesis directa del documento.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Responde con información directa del documento.\n- No agregues explicación genérica, interpretación documental ni frases fijas.\n- No inventes información ni agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.\n- Si la información es parcial, responde solo con lo que el documento afirma.",
 			NumPredict:   900,
 		}
 	}
@@ -287,16 +287,16 @@ func IsKeyPointsQuery(query string) bool {
 
 func keyPointsPromptConfig() answerPromptConfig {
 	return answerPromptConfig{
-		SystemPrompt: "Extrae y desarrolla los puntos clave del documento como analista documental experto. Cada punto debe estar explicado con suficiente contexto, no como frase aislada.",
-		UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Presenta el título: Puntos clave del documento.\n- Incluye entre 5 y 8 puntos clave.\n- Cada punto debe tener una explicación de 3 a 5 líneas, con contexto y relevancia.\n- Evita puntos de una sola frase.\n- No incluyas referencias internas ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
+		SystemPrompt: "Extrae los puntos clave del documento usando solo el contexto recuperado.",
+		UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Presenta el título: Puntos clave del documento.\n- Incluye puntos clave derivados directamente del texto.\n- No agregues comentarios de relevancia, función, importancia o interpretación si no están en el contexto.\n- No repitas estructuras ni uses frases fijas.\n- No incluyas referencias internas ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
 		NumPredict:   1300,
 	}
 }
 
 func summarySectionPromptConfig() sectionSummaryPromptConfig {
 	return sectionSummaryPromptConfig{
-		SystemPrompt: "Analiza la seccion usando solo el contexto recuperado. Identifica su idea principal, puntos importantes y aporte dentro del documento con una explicación desarrollada.",
-		UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Escribe 2 o 3 párrafos explicativos.\n- Identifica el aporte principal de la sección dentro del documento.\n- No inventes información.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.",
+		SystemPrompt: "Sintetiza la seccion usando solo el contexto recuperado.",
+		UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Escribe solo información reescrita o sintetizada directamente del texto.\n- No agregues comentarios de aporte, relevancia, función o interpretación si no están en el contexto.\n- No inventes información.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.",
 		NumPredict:   550,
 	}
 }

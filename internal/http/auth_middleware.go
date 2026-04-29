@@ -2,6 +2,8 @@ package http
 
 import (
 	"context"
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -18,7 +20,11 @@ const IPCKey contextKey = "ipc"
 func AuthMiddleware(jwtSecret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			uploadPath := isUploadPath(r.URL.Path)
 			tokenStr := extractAuthToken(r)
+			if uploadPath {
+				log.Printf("upload_auth token_recibido=%t token_length=%d", tokenStr != "", len(tokenStr))
+			}
 			if tokenStr == "" {
 				http.Error(w, "faltó Authorization", http.StatusUnauthorized)
 				return
@@ -28,8 +34,19 @@ func AuthMiddleware(jwtSecret string) func(http.Handler) http.Handler {
 				return []byte(jwtSecret), nil
 			})
 			if err != nil || !token.Valid {
-				http.Error(w, "token inválido", http.StatusUnauthorized)
+				if uploadPath && errors.Is(err, jwt.ErrTokenExpired) {
+					log.Printf("upload_auth token_expirado=true error=%v", err)
+					http.Error(w, "token expirado. Inicia sesión de nuevo.", http.StatusUnauthorized)
+					return
+				}
+				if uploadPath {
+					log.Printf("upload_auth token_valido=false error=%v", err)
+				}
+				http.Error(w, "token inválido. Inicia sesión de nuevo.", http.StatusUnauthorized)
 				return
+			}
+			if uploadPath {
+				log.Printf("upload_auth token_valido=true token_expirado=false")
 			}
 
 			claims, ok := token.Claims.(jwt.MapClaims)
@@ -51,6 +68,10 @@ func AuthMiddleware(jwtSecret string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+func isUploadPath(path string) bool {
+	return path == "/api/documents/upload" || path == "/documents/upload"
 }
 
 func GetIPC(r *http.Request) (ipc.Context, bool) {

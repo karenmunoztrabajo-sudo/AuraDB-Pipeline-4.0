@@ -25,6 +25,7 @@ import (
 const (
 	maxDocumentUploadBytes = 25 * 1024 * 1024
 	maxImageUploadBytes    = 10 * 1024 * 1024
+	uploadEventSubject     = "documents.uploaded"
 )
 
 type DocumentHandler struct {
@@ -73,6 +74,7 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no autorizado", http.StatusUnauthorized)
 		return
 	}
+	log.Printf("upload_attempt endpoint=%s tenant_id=%s user_id=%s", r.URL.Path, ipcCtx.TenantID, ipcCtx.UserID)
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxDocumentUploadBytes+1024*1024)
 
@@ -262,17 +264,21 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		ipcCtx.TenantID,
 		objectKey,
 	)
+	log.Printf("event_publish_attempt subject=%s document_id=%s document_version_id=%s job_id=%s", uploadEventSubject, documentID, documentVersionID, jobID)
 	if h.natsRepo == nil {
+		log.Printf("event_publish_error subject=%s document_id=%s document_version_id=%s job_id=%s error=%s", uploadEventSubject, documentID, documentVersionID, jobID, "nats_repo_nil")
 		log.Printf("upload_error cause=nats_repo_nil filename=%s document_id=%s job_id=%s", header.Filename, documentID, jobID)
 		http.Error(w, "error publicando evento al worker: repositorio no inicializado", http.StatusInternalServerError)
 		return
 	}
-	if err := h.natsRepo.Publish("documents.uploaded", []byte(event)); err != nil {
+	if err := h.natsRepo.Publish(uploadEventSubject, []byte(event)); err != nil {
+		log.Printf("event_publish_error subject=%s document_id=%s document_version_id=%s job_id=%s error=%v", uploadEventSubject, documentID, documentVersionID, jobID, err)
 		log.Printf("upload_error cause=publish_upload_event filename=%s document_id=%s job_id=%s error=%v", header.Filename, documentID, jobID, err)
 		http.Error(w, "error publicando evento al worker: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("upload_event_published filename=%s document_id=%s document_version_id=%s job_id=%s subject=%s", header.Filename, documentID, documentVersionID, jobID, "documents.uploaded")
+	log.Printf("event_publish_success subject=%s document_id=%s document_version_id=%s job_id=%s", uploadEventSubject, documentID, documentVersionID, jobID)
+	log.Printf("upload_event_published filename=%s document_id=%s document_version_id=%s job_id=%s subject=%s", header.Filename, documentID, documentVersionID, jobID, uploadEventSubject)
 
 	legacyMessage := fmt.Sprintf(
 		"upload ok | document_id=%s | document_version_id=%s | job_id=%s | object_key=%s",
