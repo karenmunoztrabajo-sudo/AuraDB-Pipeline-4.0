@@ -27,6 +27,23 @@ func NewSearchRepository(db *pgxpool.Pool) *SearchRepository {
 	return &SearchRepository{db: db}
 }
 
+func (r *SearchRepository) GetDocumentFilename(ctx context.Context, tenantID string, documentID string) (string, error) {
+	if strings.TrimSpace(documentID) == "" {
+		return "", nil
+	}
+
+	var filename string
+	err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(original_name, ''), NULLIF(logical_name, ''), NULLIF(stored_name, ''), '')
+		FROM documents
+		WHERE tenant_id = $1 AND id = $2
+	`, tenantID, documentID).Scan(&filename)
+	if err != nil {
+		return "", err
+	}
+	return filename, nil
+}
+
 func (r *SearchRepository) GetChunksWithEmbeddings(ctx context.Context, tenantID string) ([]SearchResult, error) {
 	return r.GetChunksWithEmbeddingsByDocumentID(ctx, tenantID, "")
 }
@@ -75,6 +92,10 @@ func (r *SearchRepository) GetChunksByDocumentID(ctx context.Context, documentID
 }
 
 func (r *SearchRepository) GetChunksByDocumentIDs(ctx context.Context, tenantID string, documentIDs []string) ([]SearchResult, error) {
+	if len(documentIDs) == 0 {
+		return nil, nil
+	}
+
 	query := `
 		SELECT
 			c.id,
@@ -85,11 +106,8 @@ func (r *SearchRepository) GetChunksByDocumentIDs(ctx context.Context, tenantID 
 		FROM chunks c
 		WHERE c.tenant_id = $1
 	`
-	args := []any{tenantID}
-	if len(documentIDs) > 0 {
-		query += " AND c.document_id = ANY($2)"
-		args = append(args, documentIDs)
-	}
+	args := []any{tenantID, documentIDs}
+	query += " AND c.document_id = ANY($2)"
 	query += " ORDER BY c.chunk_index ASC, c.created_at DESC"
 
 	rows, err := r.db.Query(ctx, query, args...)
@@ -125,13 +143,17 @@ func (r *SearchRepository) GetChunksByDocumentIDs(ctx context.Context, tenantID 
 }
 
 func (r *SearchRepository) GetChunksWithEmbeddingsByDocumentID(ctx context.Context, tenantID string, documentID string) ([]SearchResult, error) {
-	if documentID == "" {
-		return r.GetChunksWithEmbeddingsByDocumentIDs(ctx, tenantID, nil)
+	if strings.TrimSpace(documentID) == "" {
+		return nil, nil
 	}
 	return r.GetChunksWithEmbeddingsByDocumentIDs(ctx, tenantID, []string{documentID})
 }
 
 func (r *SearchRepository) GetChunksWithEmbeddingsByDocumentIDs(ctx context.Context, tenantID string, documentIDs []string) ([]SearchResult, error) {
+	if len(documentIDs) == 0 {
+		return nil, nil
+	}
+
 	query := `
 		SELECT
 			c.id,
@@ -144,11 +166,8 @@ func (r *SearchRepository) GetChunksWithEmbeddingsByDocumentIDs(ctx context.Cont
 		INNER JOIN embeddings e ON e.chunk_id = c.id
 		WHERE c.tenant_id = $1
 	`
-	args := []any{tenantID}
-	if len(documentIDs) > 0 {
-		query += " AND c.document_id = ANY($2)"
-		args = append(args, documentIDs)
-	}
+	args := []any{tenantID, documentIDs}
+	query += " AND c.document_id = ANY($2)"
 	query += " ORDER BY c.created_at DESC"
 
 	rows, err := r.db.Query(ctx, query, args...)
@@ -190,13 +209,17 @@ func (r *SearchRepository) GetChunksWithEmbeddingsByDocumentIDs(ctx context.Cont
 }
 
 func (r *SearchRepository) GetChunksByText(ctx context.Context, tenantID string, documentID string, searchText string) ([]SearchResult, error) {
-	if documentID == "" {
-		return r.GetChunksByTextByDocumentIDs(ctx, tenantID, nil, searchText)
+	if strings.TrimSpace(documentID) == "" {
+		return nil, nil
 	}
 	return r.GetChunksByTextByDocumentIDs(ctx, tenantID, []string{documentID}, searchText)
 }
 
 func (r *SearchRepository) GetChunksByTextByDocumentIDs(ctx context.Context, tenantID string, documentIDs []string, searchText string) ([]SearchResult, error) {
+	if len(documentIDs) == 0 {
+		return nil, nil
+	}
+
 	query := `
 		SELECT
 			c.id,
@@ -207,14 +230,11 @@ func (r *SearchRepository) GetChunksByTextByDocumentIDs(ctx context.Context, ten
 		FROM chunks c
 		WHERE c.tenant_id = $1
 	`
-	args := []any{tenantID}
+	args := []any{tenantID, documentIDs}
 	nextArg := 2
 
-	if len(documentIDs) > 0 {
-		query += " AND c.document_id = ANY($" + strconv.Itoa(nextArg) + ")"
-		args = append(args, documentIDs)
-		nextArg++
-	}
+	query += " AND c.document_id = ANY($" + strconv.Itoa(nextArg) + ")"
+	nextArg++
 
 	terms := searchTerms(searchText)
 	if len(terms) > 0 {

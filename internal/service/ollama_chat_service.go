@@ -287,8 +287,8 @@ func IsKeyPointsQuery(query string) bool {
 
 func keyPointsPromptConfig() answerPromptConfig {
 	return answerPromptConfig{
-		SystemPrompt: "Extrae los puntos clave del documento usando solo el contexto recuperado.",
-		UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Presenta el título: Puntos clave del documento.\n- Incluye puntos clave derivados directamente del texto.\n- No agregues comentarios de relevancia, función, importancia o interpretación si no están en el contexto.\n- No repitas estructuras ni uses frases fijas.\n- No incluyas referencias internas ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
+		SystemPrompt: "Extrae puntos clave reales del documento usando solo el contexto recuperado. Analiza los chunks, agrupa ideas y redacta una sintesis propia sin copiar frases completas.",
+		UserRules:    "Reglas obligatorias:\n- Usa exactamente el titulo: Puntos clave del documento.\n- Incluye maximo 5 puntos.\n- Cada punto debe tener un titulo corto de 2 a 5 palabras y una explicacion clara de 2 a 3 lineas.\n- Agrupa ideas repetidas; no encadenes chunks ni repitas la misma informacion.\n- No uses titulos del documento como puntos.\n- No copies frases completas ni listas del documento.\n- No uses frases de enlace genericas entre puntos.\n- No incluyas referencias internas, identificadores ni etiquetas tecnicas.\n- No inventes informacion ni agregues conocimiento externo.\n\nFormato obligatorio:\nPuntos clave del documento\n\n1. Titulo\nExplicacion en parrafo\n\n2. Titulo\nExplicacion en parrafo",
 		NumPredict:   1300,
 	}
 }

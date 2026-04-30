@@ -247,41 +247,6 @@
       font-size: 16px;
     }
 
-    .quick-actions {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
-      margin: 18px 0 14px;
-    }
-
-    .quick-action {
-      padding: 14px 12px;
-      border: 1px solid #cfe2dd;
-      border-radius: 14px;
-      background: linear-gradient(180deg, #fbfffe 0%, #f3faf8 100%);
-      color: var(--text);
-      text-align: left;
-      box-shadow: 0 10px 24px rgba(8, 117, 104, 0.06);
-    }
-
-    .quick-action:hover {
-      background: linear-gradient(180deg, #f4fbf9 0%, #eaf6f3 100%);
-      border-color: #aacfc6;
-    }
-
-    .quick-action strong {
-      display: block;
-      margin-bottom: 4px;
-      font-size: 15px;
-    }
-
-    .quick-action span {
-      display: block;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.4;
-    }
-
     .secondary-button {
       border-color: var(--border);
       background: #ffffff;
@@ -858,10 +823,6 @@
     }
 
     @media (max-width: 880px) {
-      .quick-actions {
-        grid-template-columns: 1fr 1fr;
-      }
-
       .composer-footer {
         align-items: stretch;
         flex-direction: column;
@@ -921,31 +882,11 @@
   <div id="workspace" class="workspace">
     <section class="main-panel" id="queryPanel">
       <div class="intro-block">
-        <h2>AuraDB Pipeline — Analiza tus documentos con inteligencia</h2>
-        <p>Sube un documento y obtén resúmenes, puntos clave y respuestas sin leerlo completo.</p>
+        <h2>Consulta tu documento</h2>
+        <p>Sube un documento y obtén resúmenes, puntos clave y respuestas.</p>
       </div>
 
-      <h2>Consulta tu documento</h2>
-      <p class="panel-intro">Elige una sugerencia o escribe una pregunta libre sobre el documento actual.</p>
-
-      <div class="quick-actions">
-        <button type="button" class="quick-action" onclick="setQuickQuestion('summary')">
-          <strong>Resumen</strong>
-          <span>Obtén una vista breve del documento.</span>
-        </button>
-        <button type="button" class="quick-action" onclick="setQuickQuestion('structure')">
-          <strong>Secciones</strong>
-          <span>Descubre qué contiene el documento.</span>
-        </button>
-        <button type="button" class="quick-action" onclick="setQuickQuestion('keypoints')">
-          <strong>Puntos clave</strong>
-          <span>Extrae lo más importante rápidamente.</span>
-        </button>
-        <button type="button" class="quick-action" onclick="setQuickQuestion('technical')">
-          <strong>Flujo técnico</strong>
-          <span>Describe procesos, pasos o arquitectura.</span>
-        </button>
-      </div>
+      
 
       <div class="composer">
         <div class="composer-head">
@@ -1078,6 +1019,28 @@ function toggleHistoryPanel() {
   document.getElementById('sessionMenu').classList.add('hidden');
   if (historyPanelOpen) {
     loadAskHistory();
+  }
+}
+
+function closeHistoryPanel() {
+  if (!historyPanelOpen) {
+    return;
+  }
+  historyPanelOpen = false;
+  persistHistoryPanelState();
+  renderHistoryPanel();
+}
+
+function handleHistoryClickOutside(event) {
+  if (!historyPanelOpen) {
+    return;
+  }
+  const panel = document.getElementById('historyPanel');
+  if (!panel) {
+    return;
+  }
+  if (!panel.contains(event.target)) {
+    closeHistoryPanel();
   }
 }
 
@@ -2146,6 +2109,8 @@ document.getElementById("uploadButton").addEventListener("click", function () {
 document.getElementById("file").addEventListener("change", uploadSelectedFile);
 
 document.getElementById("clearButton").addEventListener("click", clearDocument);
+
+document.addEventListener("mousedown", handleHistoryClickOutside);
 
 document.addEventListener('click', function (event) {
   const menu = document.getElementById('sessionMenu');
