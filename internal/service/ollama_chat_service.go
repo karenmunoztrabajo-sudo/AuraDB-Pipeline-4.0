@@ -101,7 +101,8 @@ func (s *OllamaChatService) answerWithPrompt(ctx context.Context, question strin
 		return "", errors.New("pregunta vacía")
 	}
 
-	contextText = trimContextForQuery(question, contextText)
+	contextText = sanitizeSensitiveText(trimContextForQuery(question, contextText))
+	userRules = ensureInterpretationRule(userRules)
 
 	body, err := json.Marshal(ollamaChatRequest{
 		Model: s.model,
@@ -174,7 +175,7 @@ func (s *OllamaChatService) answerWithPrompt(ctx context.Context, question strin
 		return "", err
 	}
 
-	return parsed.Message.Content, nil
+	return sanitizeSensitiveText(parsed.Message.Content), nil
 }
 
 func trimContextForQuery(question string, contextText string) string {
@@ -191,29 +192,30 @@ func trimContextForQuery(question string, contextText string) string {
 }
 
 func promptConfigForQueryType(queryType string) answerPromptConfig {
+	interpretationRule := "\n- No copies el texto del documento.\n- Interpreta y explica el contenido con tus propias palabras."
 	switch queryType {
 	case "summary":
 		return answerPromptConfig{
 			SystemPrompt: "Resume el documento usando únicamente el contexto recuperado. Reescribe y sintetiza información visible del documento sin agregar comentarios genéricos.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- La respuesta solo puede contener texto reescrito del documento o síntesis directa de ese texto.\n- No agregues explicaciones de relevancia, función, importancia, aporte o interpretación si no están explícitas en el contexto.\n- No repitas estructuras ni concatenes frases fijas.\n- No uses referencias internas, identificadores ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- La respuesta solo puede contener texto reescrito del documento o síntesis directa de ese texto.\n- No agregues explicaciones de relevancia, función, importancia, aporte o interpretación si no están explícitas en el contexto.\n- No repitas estructuras ni concatenes frases fijas.\n- No uses referencias internas, identificadores ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo." + interpretationRule,
 			NumPredict:   1800,
 		}
 	case "section":
 		return answerPromptConfig{
 			SystemPrompt: "Responde sobre la sección solicitada usando únicamente el contexto. Sintetiza de forma directa el texto recuperado.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No mezcles contenido ajeno a la sección si no está respaldado por el contexto.\n- La respuesta solo puede contener texto reescrito del documento o síntesis directa de ese texto.\n- No agregues explicaciones genéricas ni interpretación documental.\n- No incluyas referencias internas ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No mezcles contenido ajeno a la sección si no está respaldado por el contexto.\n- La respuesta solo puede contener texto reescrito del documento o síntesis directa de ese texto.\n- No agregues explicaciones genéricas ni interpretación documental.\n- No incluyas referencias internas ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo." + interpretationRule,
 			NumPredict:   900,
 		}
 	case "structure":
 		return answerPromptConfig{
 			SystemPrompt: "Extrae la estructura visible del documento usando solo el contexto. Enumera secciones, temas, hojas, columnas o bloques cuando aparezcan.",
-			UserRules:    "Reglas obligatorias:\n- Extrae estructura o temas visibles en el contexto.\n- Describe cada elemento solo con información presente en el documento.\n- No agregues comentarios sobre función, importancia o utilidad si no están escritos en el contexto.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.",
+			UserRules:    "Reglas obligatorias:\n- Extrae estructura o temas visibles en el contexto.\n- Describe cada elemento solo con información presente en el documento.\n- No agregues comentarios sobre función, importancia o utilidad si no están escritos en el contexto.\n- No agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas." + interpretationRule,
 			NumPredict:   850,
 		}
 	default:
 		return answerPromptConfig{
 			SystemPrompt: "Responde usando solo el contexto recuperado. La respuesta debe ser una extracción reescrita o una síntesis directa del documento.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Responde con información directa del documento.\n- No agregues explicación genérica, interpretación documental ni frases fijas.\n- No inventes información ni agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.\n- Si la información es parcial, responde solo con lo que el documento afirma.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- Responde con información directa del documento.\n- No agregues explicación genérica, interpretación documental ni frases fijas.\n- No inventes información ni agregues conocimiento externo.\n- No incluyas referencias internas ni etiquetas técnicas.\n- Si la información es parcial, responde solo con lo que el documento afirma." + interpretationRule,
 			NumPredict:   900,
 		}
 	}

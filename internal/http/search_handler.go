@@ -2,8 +2,10 @@ package http
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"auradb-pipeline/internal/service"
 )
@@ -41,6 +43,9 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	if len(documentIDs) == 0 && documentID != "" {
 		documentIDs = []string{documentID}
 	}
+	selectedDocumentIDs := strings.Join(documentIDs, ",")
+	multiDocumentMode := len(documentIDs) == 0 || len(documentIDs) > 1
+	log.Printf("search_handler selected_document_ids=%q multi_document_mode=%t", selectedDocumentIDs, multiDocumentMode)
 
 	results, err := h.searchService.SearchWithDocumentIDs(r.Context(), ipcCtx.TenantID, query, topK, documentIDs)
 	if err != nil {

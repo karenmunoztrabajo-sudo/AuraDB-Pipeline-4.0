@@ -82,8 +82,11 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 	entityFilterApplied := shouldApplyEntityFilter(queryIntent.MainEntity)
 	precisionMode := isPrecisionQuery(query) && queryType != "summary"
 	selectedDocumentIDs := normalizeDocumentIDs(documentIDs)
-	multiDocumentMode := len(selectedDocumentIDs) > 1
+	multiDocumentMode := len(selectedDocumentIDs) == 0 || len(selectedDocumentIDs) > 1
 	documentIDLog := strings.Join(selectedDocumentIDs, ",")
+	if len(selectedDocumentIDs) > 1 && topK > 20 {
+		topK = 20
+	}
 	if queryType == "summary" && topK < 4 {
 		topK = 4
 	}
@@ -98,7 +101,7 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 	}
 	log.Printf("search_request query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q topK=%d document_id=%s selected_document_ids=%q multi_document_mode=%t modo_precision=%t main_terms_detected=%q main_entity_detected=%q entity_filter_applied=%t entity_extraction_mode=%q reason_entity_rejected=%q section_query_detected=%t section_term=%q", query, query, normalizedQuery, queryType, topK, firstDocumentID(selectedDocumentIDs), documentIDLog, multiDocumentMode, precisionMode, strings.Join(queryIntent.MainTerms, ","), queryIntent.MainEntity, entityFilterApplied, queryIntent.EntityExtractionMode, queryIntent.EntityRejectedReason, sectionQueryDetected, sectionTerm)
 
-	if queryType == "summary" && len(selectedDocumentIDs) > 0 {
+	if queryType == "summary" {
 		return s.searchSummaryDirect(ctx, tenantID, query, topK, selectedDocumentIDs)
 	}
 
@@ -108,6 +111,7 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 			return nil, err
 		}
 		log.Printf("search_document_id=%s direct_chunks_found=%d", firstDocumentID(selectedDocumentIDs), len(directChunks))
+		log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, countUniqueSearchResultDocuments(directChunks))
 
 		if queryType == "structure" {
 			results := orderResultsByDocumentPosition(structureResults(directChunks, topK))
@@ -123,7 +127,14 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 			return textResults, nil
 		}
 
-		fallbackResults := firstDocumentChunks(directChunks, 3)
+		fallbackLimit := 3
+		if multiDocumentMode {
+			fallbackLimit = topK
+			if fallbackLimit > 20 {
+				fallbackLimit = 20
+			}
+		}
+		fallbackResults := firstDocumentChunks(directChunks, fallbackLimit)
 		log.Printf("search_document_id=%s direct_chunks_found=%d text_matches_found=%d returned_chunks=%d", firstDocumentID(selectedDocumentIDs), len(directChunks), textMatchesFound, len(fallbackResults))
 		log.Printf("search_mode=fallback text_matches_found=%d returned_chunks=%d document_id=%s query_type=%s", textMatchesFound, len(fallbackResults), firstDocumentID(selectedDocumentIDs), queryType)
 		return fallbackResults, nil
@@ -133,6 +144,7 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, countUniqueSearchResultDocuments(items))
 
 	if len(items) == 0 {
 		results, err := s.searchTextFallback(ctx, tenantID, query, topK, selectedDocumentIDs, 0, precisionMode)
@@ -237,7 +249,7 @@ func (s *SearchService) searchSummaryDirect(ctx context.Context, tenantID string
 			"summary",
 			firstDocumentID(documentIDs),
 			strings.Join(documentIDs, ","),
-			len(documentIDs) > 1,
+			len(documentIDs) == 0 || len(documentIDs) > 1,
 			0,
 			0,
 		)
@@ -247,8 +259,8 @@ func (s *SearchService) searchSummaryDirect(ctx context.Context, tenantID string
 	if topK <= 0 {
 		topK = 20
 	}
-	if topK > 30 {
-		topK = 30
+	if topK > 20 {
+		topK = 20
 	}
 	if len(items) > topK {
 		items = items[:topK]
@@ -261,7 +273,7 @@ func (s *SearchService) searchSummaryDirect(ctx context.Context, tenantID string
 		"summary",
 		firstDocumentID(documentIDs),
 		strings.Join(documentIDs, ","),
-		len(documentIDs) > 1,
+		len(documentIDs) == 0 || len(documentIDs) > 1,
 		len(items),
 		len(items),
 	)
@@ -272,7 +284,7 @@ func (s *SearchService) searchSummaryDirect(ctx context.Context, tenantID string
 func (s *SearchService) directChunksByDocumentIDs(ctx context.Context, tenantID string, documentIDs []string) ([]postgres.SearchResult, error) {
 	documentIDs = normalizeDocumentIDs(documentIDs)
 	if len(documentIDs) == 0 {
-		return nil, nil
+		return s.repo.GetChunksByDocumentIDs(ctx, tenantID, nil)
 	}
 	if len(documentIDs) == 1 {
 		return s.repo.GetChunksByDocumentID(ctx, documentIDs[0])
@@ -308,6 +320,18 @@ func firstDocumentChunks(chunks []postgres.SearchResult, limit int) []postgres.S
 		ordered[i].Score = 1.0
 	}
 	return ordered
+}
+
+func countUniqueSearchResultDocuments(chunks []postgres.SearchResult) int {
+	seen := make(map[string]bool)
+	for _, chunk := range chunks {
+		documentID := strings.TrimSpace(chunk.DocumentID)
+		if documentID == "" || seen[documentID] {
+			continue
+		}
+		seen[documentID] = true
+	}
+	return len(seen)
 }
 
 func (s *SearchService) searchTextFirst(ctx context.Context, tenantID string, query string, topK int, documentIDs []string) ([]postgres.SearchResult, int, error) {
@@ -433,7 +457,7 @@ func (s *SearchService) searchTextFallback(ctx context.Context, tenantID string,
 	queryIntent := detectQueryIntent(query)
 	entityFilterApplied := shouldApplyEntityFilter(queryIntent.MainEntity)
 	selectedDocumentIDs := normalizeDocumentIDs(documentIDs)
-	multiDocumentMode := len(selectedDocumentIDs) > 1
+	multiDocumentMode := len(selectedDocumentIDs) == 0 || len(selectedDocumentIDs) > 1
 	documentIDLog := strings.Join(selectedDocumentIDs, ",")
 	if queryType == "summary" && topK < 4 {
 		topK = 4

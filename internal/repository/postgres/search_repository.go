@@ -45,7 +45,7 @@ func (r *SearchRepository) GetDocumentFilename(ctx context.Context, tenantID str
 }
 
 func (r *SearchRepository) GetChunksWithEmbeddings(ctx context.Context, tenantID string) ([]SearchResult, error) {
-	return r.GetChunksWithEmbeddingsByDocumentID(ctx, tenantID, "")
+	return r.GetChunksWithEmbeddingsByDocumentIDs(ctx, tenantID, nil)
 }
 
 func (r *SearchRepository) GetChunksByDocumentID(ctx context.Context, documentID string) ([]SearchResult, error) {
@@ -92,10 +92,6 @@ func (r *SearchRepository) GetChunksByDocumentID(ctx context.Context, documentID
 }
 
 func (r *SearchRepository) GetChunksByDocumentIDs(ctx context.Context, tenantID string, documentIDs []string) ([]SearchResult, error) {
-	if len(documentIDs) == 0 {
-		return nil, nil
-	}
-
 	query := `
 		SELECT
 			c.id,
@@ -106,9 +102,12 @@ func (r *SearchRepository) GetChunksByDocumentIDs(ctx context.Context, tenantID 
 		FROM chunks c
 		WHERE c.tenant_id = $1
 	`
-	args := []any{tenantID, documentIDs}
-	query += " AND c.document_id = ANY($2)"
-	query += " ORDER BY c.chunk_index ASC, c.created_at DESC"
+	args := []any{tenantID}
+	if len(documentIDs) > 0 {
+		args = append(args, documentIDs)
+		query += " AND c.document_id = ANY($2)"
+	}
+	query += " ORDER BY c.created_at DESC, c.document_id ASC, c.chunk_index ASC"
 
 	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
@@ -150,10 +149,6 @@ func (r *SearchRepository) GetChunksWithEmbeddingsByDocumentID(ctx context.Conte
 }
 
 func (r *SearchRepository) GetChunksWithEmbeddingsByDocumentIDs(ctx context.Context, tenantID string, documentIDs []string) ([]SearchResult, error) {
-	if len(documentIDs) == 0 {
-		return nil, nil
-	}
-
 	query := `
 		SELECT
 			c.id,
@@ -166,8 +161,11 @@ func (r *SearchRepository) GetChunksWithEmbeddingsByDocumentIDs(ctx context.Cont
 		INNER JOIN embeddings e ON e.chunk_id = c.id
 		WHERE c.tenant_id = $1
 	`
-	args := []any{tenantID, documentIDs}
-	query += " AND c.document_id = ANY($2)"
+	args := []any{tenantID}
+	if len(documentIDs) > 0 {
+		args = append(args, documentIDs)
+		query += " AND c.document_id = ANY($2)"
+	}
 	query += " ORDER BY c.created_at DESC"
 
 	rows, err := r.db.Query(ctx, query, args...)
@@ -216,10 +214,6 @@ func (r *SearchRepository) GetChunksByText(ctx context.Context, tenantID string,
 }
 
 func (r *SearchRepository) GetChunksByTextByDocumentIDs(ctx context.Context, tenantID string, documentIDs []string, searchText string) ([]SearchResult, error) {
-	if len(documentIDs) == 0 {
-		return nil, nil
-	}
-
 	query := `
 		SELECT
 			c.id,
@@ -230,11 +224,14 @@ func (r *SearchRepository) GetChunksByTextByDocumentIDs(ctx context.Context, ten
 		FROM chunks c
 		WHERE c.tenant_id = $1
 	`
-	args := []any{tenantID, documentIDs}
+	args := []any{tenantID}
 	nextArg := 2
 
-	query += " AND c.document_id = ANY($" + strconv.Itoa(nextArg) + ")"
-	nextArg++
+	if len(documentIDs) > 0 {
+		query += " AND c.document_id = ANY($" + strconv.Itoa(nextArg) + ")"
+		args = append(args, documentIDs)
+		nextArg++
+	}
 
 	terms := searchTerms(searchText)
 	if len(terms) > 0 {
@@ -250,7 +247,7 @@ func (r *SearchRepository) GetChunksByTextByDocumentIDs(ctx context.Context, ten
 		query += ")"
 	}
 
-	query += " ORDER BY c.chunk_index ASC, c.created_at DESC"
+	query += " ORDER BY c.created_at DESC, c.document_id ASC, c.chunk_index ASC"
 
 	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {

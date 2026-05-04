@@ -88,6 +88,58 @@ func parseStructuredXLSX(data []byte) (*ExcelDocument, string, error) {
 	return document, content, nil
 }
 
+func parseStructuredExcelFile(filePath string) (*ExcelDocument, string, error) {
+	file, err := excelize.OpenFile(filePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("error abriendo excel con excelize: %w", err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	return parseStructuredExcelWorkbook(file)
+}
+
+func parseStructuredExcelWorkbook(file *excelize.File) (*ExcelDocument, string, error) {
+	sheetNames := file.GetSheetList()
+	if len(sheetNames) == 0 {
+		return nil, "", fmt.Errorf("excel sin hojas")
+	}
+
+	document := &ExcelDocument{
+		Sheets: make([]ExcelSheet, 0, len(sheetNames)),
+	}
+
+	for _, sheetName := range sheetNames {
+		rows, err := file.GetRows(sheetName)
+		if err != nil {
+			return nil, "", fmt.Errorf("error leyendo hoja %s: %w", sheetName, err)
+		}
+
+		parsedSheet, err := buildStructuredExcelSheet(sheetName, rows)
+		if err != nil {
+			return nil, "", err
+		}
+		if parsedSheet == nil {
+			continue
+		}
+
+		document.Sheets = append(document.Sheets, *parsedSheet)
+		document.RowsProcessed += parsedSheet.DataRowCount
+	}
+
+	if len(document.Sheets) == 0 {
+		return nil, "", fmt.Errorf("excel sin datos legibles: todas las hojas estan vacias")
+	}
+
+	content := buildExcelStructuredText(document)
+	if strings.TrimSpace(content) == "" {
+		return nil, "", fmt.Errorf("excel sin texto estructurado util tras el procesamiento")
+	}
+
+	return document, content, nil
+}
+
 func SplitExcelIntoChunks(doc *ExcelDocument, maxLen int) ([]string, ExcelChunkStats) {
 	if doc == nil || len(doc.Sheets) == 0 {
 		return nil, ExcelChunkStats{}
@@ -267,12 +319,12 @@ func formatExcelRow(headers []string, row ExcelRow) string {
 		if i < len(headers) && strings.TrimSpace(headers[i]) != "" {
 			header = headers[i]
 		}
-		pairs = append(pairs, header+"="+value)
+		pairs = append(pairs, header+" = "+value)
 	}
 	if len(pairs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("Fila %d: %s", row.Number, strings.Join(pairs, " | "))
+	return fmt.Sprintf("Fila %d: %s", row.Number, strings.Join(pairs, ", "))
 }
 
 func normalizeExcelRow(row []string) []string {

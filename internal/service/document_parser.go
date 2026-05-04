@@ -114,20 +114,20 @@ func ParseDocument(filename string, mimeType string, data []byte) (ParseResult, 
 			Extension:    extension,
 			ParserName:   "docx_xml",
 		}, nil
-	case "xlsx":
-		excelDoc, content, err := parseStructuredXLSX(data)
+	case "spreadsheet":
+		excelDoc, content, err := parseSpreadsheet(data, extension)
 		if err != nil {
 			return ParseResult{
 				DetectedType: detectedType,
 				Extension:    extension,
-				ParserName:   "xlsx_excelize",
+				ParserName:   "excel_excelize",
 			}, err
 		}
 		return ParseResult{
 			Content:      content,
 			DetectedType: detectedType,
 			Extension:    extension,
-			ParserName:   "xlsx_excelize",
+			ParserName:   "excel_excelize",
 			ExcelData:    excelDoc,
 		}, nil
 	default:
@@ -150,8 +150,8 @@ func detectDocumentType(filename string, mimeType string) string {
 		return "pdf"
 	case ".docx":
 		return "docx"
-	case ".xlsx":
-		return "xlsx"
+	case ".xlsx", ".xls":
+		return "spreadsheet"
 	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff":
 		return "image"
 	}
@@ -160,14 +160,14 @@ func detectDocumentType(filename string, mimeType string) string {
 	switch mimeType {
 	case "text/plain":
 		return "txt"
-	case "text/csv", "application/csv", "application/vnd.ms-excel":
+	case "text/csv", "application/csv":
 		return "csv"
 	case "application/pdf":
 		return "pdf"
 	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
 		return "docx"
-	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-		return "xlsx"
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel":
+		return "spreadsheet"
 	case "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp", "image/bmp", "image/tiff":
 		return "image"
 	default:
@@ -218,6 +218,32 @@ func parseCSV(data []byte) (string, error) {
 		return "", ErrNoExtractableText
 	}
 	return content, nil
+}
+
+func parseSpreadsheet(data []byte, extension string) (*ExcelDocument, string, error) {
+	if extension == "" {
+		extension = ".xlsx"
+	}
+	tmpFile, err := os.CreateTemp("", "auradb-excel-*"+extension)
+	if err != nil {
+		return nil, "", err
+	}
+	tmpName := tmpFile.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return nil, "", err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return nil, "", err
+	}
+
+	return extractTextFromExcel(tmpName)
+}
+
+func extractTextFromExcel(filePath string) (*ExcelDocument, string, error) {
+	return parseStructuredExcelFile(filePath)
 }
 
 func parseDOCX(data []byte) (string, error) {

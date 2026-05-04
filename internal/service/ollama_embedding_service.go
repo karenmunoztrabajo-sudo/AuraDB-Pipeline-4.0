@@ -57,6 +57,7 @@ func (s *OllamaEmbeddingService) GenerateEmbedding(ctx context.Context, input st
 	if input == "" {
 		return nil, errors.New("input vacío")
 	}
+	input = sanitizeSensitiveText(input)
 
 	vector, err := s.generateWithEmbedEndpoint(ctx, input)
 	if err == nil {

@@ -411,6 +411,52 @@
       font-weight: 600;
     }
 
+    .document-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      width: 100%;
+    }
+
+    .document-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 260px;
+      padding: 4px 7px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fbfcfd;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+
+    .document-pill-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .document-remove {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .document-remove:hover {
+      background: #eef2f5;
+      color: var(--danger);
+    }
+
     .query-action {
       width: auto;
       min-width: 108px;
@@ -906,10 +952,11 @@
         </div>
         <div class="composer-footer">
           <div class="file-area">
-            <input type="file" id="file" style="display:none" />
+            <input type="file" id="file" multiple hidden />
             <button type="button" id="uploadButton" class="secondary-button compact-button">Subir documento</button>
             <button type="button" id="clearButton" class="secondary-button compact-button">Limpiar</button>
             <span id="currentDocumentName" class="file-status">Sin documento cargado</span>
+            <div id="documentList" class="document-list"></div>
             <div id="uploadResult" class="status"></div>
           </div>
           <button class="query-action compact-button" onclick="askDocument()">Consultar</button>
@@ -948,6 +995,7 @@ const AUTH_TOKEN_KEY = "auradb.authToken";
 const TENANT_ID = "14168b79-719b-4578-832a-d571bc2da2d5";
 const CURRENT_DOCUMENT_ID_KEY = "auradb.currentDocumentId";
 const CURRENT_DOCUMENT_NAME_KEY = "auradb.currentDocumentName";
+const CURRENT_DOCUMENTS_KEY = "auradb.currentDocuments";
 const CURRENT_QUERY_TEXT_KEY = "auradb.currentQueryText";
 const LAST_ANSWER_TEXT_KEY = "auradb.lastAnswerText";
 const HISTORY_FAVORITES_KEY = "auradb.historyFavorites";
@@ -956,6 +1004,7 @@ const HISTORY_PANEL_OPEN_KEY = "auradb.historyPanelOpen";
 
 let currentDocumentId = "";
 let currentDocumentName = "";
+let loadedDocuments = [];
 let pendingDeleteHistoryId = "";
 let openHistoryMenuId = "";
 let answerFeedbackTimeout = null;
@@ -1195,9 +1244,42 @@ function saveCurrentDocument(documentId, documentName) {
   currentDocumentId = documentId || "";
   if (currentDocumentId) {
     currentDocumentName = documentName || "Documento cargado";
+    loadedDocuments = [{ id: currentDocumentId, name: currentDocumentName }];
   } else {
     currentDocumentName = "";
+    loadedDocuments = [];
   }
+  saveLoadedDocuments();
+  try {
+    if (currentDocumentId) {
+      sessionStorage.setItem(CURRENT_DOCUMENT_ID_KEY, currentDocumentId);
+      sessionStorage.setItem(CURRENT_DOCUMENT_NAME_KEY, currentDocumentName);
+    } else {
+      sessionStorage.removeItem(CURRENT_DOCUMENT_ID_KEY);
+      sessionStorage.removeItem(CURRENT_DOCUMENT_NAME_KEY);
+    }
+  } catch (err) {}
+}
+
+function saveLoadedDocuments() {
+  try {
+    if (loadedDocuments.length) {
+      sessionStorage.setItem(CURRENT_DOCUMENTS_KEY, JSON.stringify(loadedDocuments));
+    } else {
+      sessionStorage.removeItem(CURRENT_DOCUMENTS_KEY);
+    }
+  } catch (err) {}
+}
+
+function syncCurrentDocumentFromList() {
+  if (loadedDocuments.length) {
+    currentDocumentId = loadedDocuments[0].id || "";
+    currentDocumentName = loadedDocuments[0].name || "Documento cargado";
+  } else {
+    currentDocumentId = "";
+    currentDocumentName = "";
+  }
+  saveLoadedDocuments();
   try {
     if (currentDocumentId) {
       sessionStorage.setItem(CURRENT_DOCUMENT_ID_KEY, currentDocumentId);
@@ -1212,12 +1294,14 @@ function saveCurrentDocument(documentId, documentName) {
 function restoreCurrentDocumentId() {
   currentDocumentId = "";
   currentDocumentName = "";
+  loadedDocuments = [];
   renderCurrentDocumentName();
 }
 
 function initializeFreshAppState() {
   currentDocumentId = "";
   currentDocumentName = "";
+  loadedDocuments = [];
 
   const fileInput = document.getElementById("file");
   if (fileInput) fileInput.value = "";
@@ -1245,6 +1329,7 @@ function clearDocumentState() {
 function resetUploadDocumentState() {
   currentDocumentId = "";
   currentDocumentName = "";
+  loadedDocuments = [];
   saveCurrentDocument("", "");
   document.getElementById('askResult').innerHTML = "";
   persistLastAnswer("");
@@ -1285,8 +1370,10 @@ function clearPersistedDocumentState() {
   try {
     sessionStorage.removeItem(CURRENT_DOCUMENT_ID_KEY);
     sessionStorage.removeItem(CURRENT_DOCUMENT_NAME_KEY);
+    sessionStorage.removeItem(CURRENT_DOCUMENTS_KEY);
     localStorage.removeItem(CURRENT_DOCUMENT_ID_KEY);
     localStorage.removeItem(CURRENT_DOCUMENT_NAME_KEY);
+    localStorage.removeItem(CURRENT_DOCUMENTS_KEY);
   } catch (err) {}
 }
 
@@ -1731,10 +1818,10 @@ function useHistoryQuestion(question, documentId) {
 
 async function uploadSelectedFile() {
   const input = document.getElementById("file");
-  const file = input.files && input.files[0];
+  const files = input.files ? Array.from(input.files) : [];
 
-  if (!file) {
-    setUploadMessage("Selecciona un archivo.", true);
+  if (!files.length) {
+    setUploadMessage("Selecciona uno o más archivos.", true);
     return;
   }
 
@@ -1745,63 +1832,105 @@ async function uploadSelectedFile() {
     return;
   }
 
+  let uploadedCount = 0;
   try {
-    setUploadMessage("Procesando documento...", false, "processing");
+    setUploadMessage(files.length === 1 ? "Procesando documento..." : "Procesando documentos...", false, "processing");
 
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const res = await fetch(API + "/api/documents/upload", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + token
-      },
-      body: formData
-    });
-
-    const text = await res.text();
-    console.log("upload response:", res.status, text);
-
-    if (!res.ok) {
-      if (res.status === 401) {
-        clearAuthToken();
-        showLogin();
-        throw new Error("Sesión inválida o expirada. Inicia sesión de nuevo.");
-      }
-      throw new Error(text || "Upload failed");
+    for (const file of files) {
+      const documentId = await uploadSingleFile(file, token);
+      addLoadedDocument({ id: documentId, name: file.name });
+      uploadedCount++;
     }
 
-    let documentId = "";
-    try {
-      const data = JSON.parse(text);
-      documentId = data.id || data.document_id || "";
-    } catch (err) {
-      const match = text.match(/document_id=([0-9a-fA-F-]{36})/);
-      documentId = match ? match[1] : "";
-    }
-
-    if (!documentId) {
-      throw new Error("No se encontró document_id en la respuesta: " + text);
-    }
-
-    currentDocumentId = documentId;
-    currentDocumentName = file.name;
-
-    sessionStorage.setItem("auradb.currentDocumentId", currentDocumentId);
-    sessionStorage.setItem("auradb.currentDocumentName", currentDocumentName);
+    syncCurrentDocumentFromList();
 
     renderCurrentDocumentName();
-    setUploadMessage("Documento listo para consultar", false, "ready");
+    setUploadMessage(uploadedCount === 1 ? "Documento listo para consultar" : uploadedCount + " documentos listos para consultar", false, "ready");
 
   } catch (err) {
     console.error("upload error:", err);
-    setUploadMessage("No se pudo subir el documento: " + err.message, true);
+    syncCurrentDocumentFromList();
+    renderCurrentDocumentName();
+    const partialMessage = uploadedCount > 0 ? uploadedCount + " documento(s) subido(s). " : "";
+    setUploadMessage(partialMessage + "No se pudo subir el documento: " + err.message, true);
+  } finally {
+    if (input) input.value = "";
   }
+}
+
+async function uploadSingleFile(file, token) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch(API + "/api/documents/upload", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + token
+    },
+    body: formData
+  });
+
+  const text = await res.text();
+  console.log("upload response:", file.name, res.status, text);
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearAuthToken();
+      showLogin();
+      throw new Error("Sesión inválida o expirada. Inicia sesión de nuevo.");
+    }
+    throw new Error(text || "Upload failed");
+  }
+
+  let documentId = "";
+  try {
+    const data = JSON.parse(text);
+    documentId = data.id || data.document_id || "";
+  } catch (err) {
+    const match = text.match(/document_id=([0-9a-fA-F-]{36})/);
+    documentId = match ? match[1] : "";
+  }
+
+  if (!documentId) {
+    throw new Error("No se encontró document_id en la respuesta: " + text);
+  }
+
+  return documentId;
+}
+
+function addLoadedDocument(documentInfo) {
+  const id = (documentInfo.id || "").trim();
+  if (!id) {
+    return;
+  }
+  loadedDocuments = loadedDocuments.filter(function (item) {
+    return item.id !== id;
+  });
+  loadedDocuments.push({
+    id: id,
+    name: documentInfo.name || "Documento cargado"
+  });
+}
+
+function removeLoadedDocument(documentId) {
+  loadedDocuments = loadedDocuments.filter(function (item) {
+    return item.id !== documentId;
+  });
+  syncCurrentDocumentFromList();
+  renderCurrentDocumentName();
+  setUploadMessage(loadedDocuments.length ? "Documento quitado de la lista." : "Sin documento cargado.", false);
+}
+
+function selectedDocumentIds() {
+  return loadedDocuments
+    .map(function (item) { return (item.id || "").trim(); })
+    .filter(Boolean);
 }
 
 function clearDocument() {
   currentDocumentId = "";
   currentDocumentName = "";
+  loadedDocuments = [];
   const fileInput = document.getElementById("file");
   if (fileInput) fileInput.value = "";
 
@@ -1820,14 +1949,40 @@ function clearDocument() {
 
 function renderCurrentDocumentName() {
   const container = document.getElementById("currentDocumentName");
+  const list = document.getElementById("documentList");
   if (!container) return;
 
-  if (!currentDocumentName) {
+  if (!loadedDocuments.length) {
     container.textContent = "Sin documento cargado";
+    if (list) list.innerHTML = "";
     return;
   }
 
-  container.textContent = currentDocumentName;
+  container.textContent = loadedDocuments.length === 1 ? loadedDocuments[0].name : loadedDocuments.length + " documentos cargados";
+
+  if (!list) return;
+  list.innerHTML = "";
+  loadedDocuments.forEach(function (documentInfo) {
+    const item = document.createElement("span");
+    item.className = "document-pill";
+
+    const name = document.createElement("span");
+    name.className = "document-pill-name";
+    name.textContent = documentInfo.name || "Documento cargado";
+    item.appendChild(name);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "document-remove";
+    remove.setAttribute("aria-label", "Quitar documento");
+    remove.textContent = "×";
+    remove.onclick = function () {
+      removeLoadedDocument(documentInfo.id);
+    };
+    item.appendChild(remove);
+
+    list.appendChild(item);
+  });
 }
 
 function setUploadMessage(message, isError, state) {
@@ -1852,23 +2007,31 @@ async function askDocument() {
 
   try {
     const question = document.getElementById('askQuery').value.trim();
+    const documentIds = selectedDocumentIds();
     const activeDocumentId = (currentDocumentId || "").trim();
     if (!question) {
       setMessage(container, "Escribe una consulta.", "error");
       return;
     }
-    if (!activeDocumentId) {
+    if (!documentIds.length) {
       setMessage(container, "Sube un documento antes de consultar.", "error");
       return;
     }
 
     persistQueryState();
-    console.log("active_document_id_before_ask", activeDocumentId);
+    console.log("active_document_ids_before_ask", documentIds);
+    console.log("ask_document_ids=" + documentIds.join(","));
 
     let url = API + "/ask?q=" + encodeURIComponent(question) + "&top_k=3";
-    url += "&document_id=" + encodeURIComponent(activeDocumentId);
-    if (activeDocumentId) {
-      saveCurrentDocument(activeDocumentId, currentDocumentName);
+    if (documentIds.length > 1) {
+      url += "&document_ids=" + encodeURIComponent(documentIds.join(","));
+    } else {
+      url += "&document_id=" + encodeURIComponent(documentIds[0]);
+    }
+    if (documentIds.length === 1) {
+      saveCurrentDocument(documentIds[0], currentDocumentName);
+    } else {
+      syncCurrentDocumentFromList();
     }
     const res = await fetch(url, {
       method: "GET",

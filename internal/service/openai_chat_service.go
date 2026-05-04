@@ -86,6 +86,10 @@ func (s *OpenAIChatService) AnswerExpandedSummary(ctx context.Context, question 
 	return s.answerWithPrompt(ctx, question, contextText, config.SystemPrompt, config.UserRules, config.NumPredict)
 }
 
+func (s *OpenAIChatService) AnswerDetailedExplanation(ctx context.Context, question string, contextText string) (string, error) {
+	return s.answerDetailedExplanationWithPrompt(ctx, question, contextText)
+}
+
 func (s *OpenAIChatService) answerWithPrompt(ctx context.Context, question string, contextText string, systemPrompt string, userRules string, maxOutputTokens int) (string, error) {
 	if strings.TrimSpace(s.apiKey) == "" {
 		return "", errors.New("OPENAI_API_KEY no configurada")
@@ -94,10 +98,11 @@ func (s *OpenAIChatService) answerWithPrompt(ctx context.Context, question strin
 		return "", errors.New("OPENAI_MODEL no configurado")
 	}
 
-	contextText = trimContextForQuery(question, contextText)
+	contextText = sanitizeSensitiveText(trimContextForQuery(question, contextText))
 	if strings.TrimSpace(contextText) == "" {
 		return "", errors.New("contexto vacío: no hay chunks con texto para enviar a OpenAI")
 	}
+	userRules = ensureInterpretationRule(userRules)
 
 	body, err := json.Marshal(openAIResponseRequest{
 		Model:        s.model,
@@ -157,8 +162,115 @@ func (s *OpenAIChatService) answerWithPrompt(ctx context.Context, question strin
 		return "", err
 	}
 
-	return answer, nil
+	return sanitizeSensitiveText(answer), nil
 }
+
+func (s *OpenAIChatService) answerDetailedExplanationWithPrompt(ctx context.Context, question string, contextText string) (string, error) {
+	if strings.TrimSpace(s.apiKey) == "" {
+		return "", errors.New("OPENAI_API_KEY no configurada")
+	}
+	if strings.TrimSpace(s.model) == "" {
+		return "", errors.New("OPENAI_MODEL no configurado")
+	}
+
+	contextText = sanitizeSensitiveText(trimContextForQuery(question, contextText))
+	if strings.TrimSpace(contextText) == "" {
+		return "", errors.New("contexto vacío: no hay texto del documento para enviar a OpenAI")
+	}
+
+	body, err := json.Marshal(openAIResponseRequest{
+		Model:        s.model,
+		Instructions: detailedExplanationSystemPrompt,
+		Input: fmt.Sprintf(
+			"Texto del documento:\n%s\n\n%s\n\nSolicitud:\n%s",
+			contextText,
+			detailedExplanationUserRules,
+			question,
+		),
+		MaxOutputTokens: detailedExplanationTokenLimit,
+		Store:           false,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/responses", bytes.NewBuffer(body))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		log.Printf("openai_request_error=%q", err.Error())
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var raw bytes.Buffer
+	_, _ = raw.ReadFrom(resp.Body)
+
+	if resp.StatusCode >= 300 {
+		err := fmt.Errorf("openai responses error: status=%d body=%s", resp.StatusCode, raw.String())
+		log.Printf("openai_response_error=%q", err.Error())
+		return "", err
+	}
+
+	var parsed openAIResponse
+	if err := json.Unmarshal(raw.Bytes(), &parsed); err != nil {
+		log.Printf("openai_decode_error=%q raw=%s", err.Error(), raw.String())
+		return "", err
+	}
+	if parsed.Error != nil {
+		err := fmt.Errorf("openai responses error: type=%s code=%s message=%s", parsed.Error.Type, parsed.Error.Code, parsed.Error.Message)
+		log.Printf("openai_response_error=%q", err.Error())
+		return "", err
+	}
+
+	answer := strings.TrimSpace(extractOpenAIText(parsed))
+	if answer == "" {
+		err := errors.New("respuesta vacía del proveedor")
+		log.Printf("openai_empty_response=true")
+		return "", err
+	}
+
+	return sanitizeSensitiveText(answer), nil
+}
+
+const detailedExplanationTokenLimit = 2200
+
+func ModelTokensLimitForDetailedExplanation() int {
+	return detailedExplanationTokenLimit
+}
+
+const detailedExplanationSystemPrompt = "Explica directamente el tema del documento con lenguaje natural. Habla del contenido real del texto, sin mencionar el funcionamiento interno del sistema y sin usar una plantilla genérica."
+
+const detailedExplanationUserRules = `Reglas obligatorias:
+- Usa solo el texto del documento.
+- No des una respuesta corta ni un resumen breve.
+- Desarrolla una explicación amplia, clara y estructurada.
+- No copies texto literal del documento; parafrasea y explica con tus propias palabras.
+- No inventes información ni agregues conocimiento externo.
+- No incluyas referencias internas, chunk_id, document_id ni etiquetas técnicas.
+- No menciones funcionamiento interno del sistema.
+- No uses las palabras chunks, recuperado, recuperación, contenido procesado ni temas recuperados.
+- No uses frases de plantilla como "respuesta organiza", "consulta planteada", "material suficiente", "punto de partida", "eje se centra" o "eje desarrolla".
+- Si el texto es parcial, explica ampliamente solo lo que esté respaldado.
+
+Formato deseado:
+El documento explica el tema central con una frase directa.
+
+Primero, aborda...
+
+Después, describe...
+
+Luego, explica...
+
+Finalmente, desarrolla...
+
+En conclusión,...`
 
 func extractOpenAIText(resp openAIResponse) string {
 	if strings.TrimSpace(resp.OutputText) != "" {

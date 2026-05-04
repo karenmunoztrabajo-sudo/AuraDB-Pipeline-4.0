@@ -188,7 +188,19 @@ func main() {
 			return
 		}
 
-		content := parseResult.Content
+		documentContentType := service.DetectDocumentContentType(parseResult.Content)
+		log.Printf("document_type_detected=%s document_id=%s", documentContentType, event.DocumentID)
+
+		content, redactedCount := service.SanitizeSensitiveTextWithCount(parseResult.Content)
+		parseResult.Content = content
+		pageRedactedCount := 0
+		for i := range parseResult.PageTexts {
+			var pageRedacted int
+			parseResult.PageTexts[i].Content, pageRedacted = service.SanitizeSensitiveTextWithCount(parseResult.PageTexts[i].Content)
+			pageRedactedCount += pageRedacted
+		}
+		redactedCount += pageRedactedCount
+		log.Printf("sensitive_values_redacted=%d document_id=%s", redactedCount, event.DocumentID)
 
 		err = parserRepo.SaveParsedDocumentWithMetadata(
 			ctx,
@@ -212,19 +224,30 @@ func main() {
 		}
 
 		chunks := service.SplitIntoChunks(content, 500)
-		if parseResult.DetectedType == "xlsx" && parseResult.ExcelData != nil {
+		if parseResult.DetectedType == "spreadsheet" && parseResult.ExcelData != nil {
 			excelChunks, excelStats := service.SplitExcelIntoChunks(parseResult.ExcelData, 500)
 			if len(excelChunks) > 0 {
 				chunks = excelChunks
 			}
 			log.Printf(
-				"excel_sheet_count=%d excel_sheet_names=%q excel_rows_processed=%d excel_chunks_generated=%d document_id=%s",
+				"detected_type=spreadsheet excel_sheets_count=%d excel_sheet_names=%q excel_rows_processed=%d text_length=%d chunks_generados=%d document_id=%s",
 				excelStats.SheetCount,
 				strings.Join(excelStats.SheetNames, ","),
 				excelStats.RowsProcessed,
+				len([]rune(content)),
 				excelStats.ChunksGenerated,
 				event.DocumentID,
 			)
+		}
+		chunkRedactedCount := 0
+		for i := range chunks {
+			var chunkRedacted int
+			chunks[i], chunkRedacted = service.SanitizeSensitiveTextWithCount(chunks[i])
+			chunkRedactedCount += chunkRedacted
+		}
+		if chunkRedactedCount > 0 {
+			redactedCount += chunkRedactedCount
+			log.Printf("sensitive_values_redacted=%d document_id=%s stage=chunks", redactedCount, event.DocumentID)
 		}
 		totalChunkLen := 0
 		for _, chunk := range chunks {
@@ -279,7 +302,8 @@ func main() {
 		embeddingsFailed := 0
 
 		for _, chunk := range savedChunks {
-			vector, err := embeddingService.GenerateEmbedding(ctx, chunk.Content)
+			embeddingInput := service.SanitizeSensitiveText(chunk.Content)
+			vector, err := embeddingService.GenerateEmbedding(ctx, embeddingInput)
 			if err != nil {
 				embeddingsFailed++
 				log.Printf(
@@ -390,7 +414,7 @@ func isParseFailure(detectedType string, err error) bool {
 	if err == nil {
 		return false
 	}
-	if detectedType != "pdf" && detectedType != "docx" && detectedType != "xlsx" {
+	if detectedType != "pdf" && detectedType != "docx" && detectedType != "spreadsheet" {
 		return false
 	}
 	return true
@@ -421,9 +445,9 @@ func logParseFailure(fileName string, detectedExtension string, parseResult serv
 		return
 	}
 
-	if parseResult.DetectedType == "xlsx" {
+	if parseResult.DetectedType == "spreadsheet" {
 		log.Printf(
-			"fallo de extracción xlsx | filename=%s detected_extension=%s parser=%s text_length=%d error=%v",
+			"fallo de extracción spreadsheet | filename=%s detected_extension=%s parser=%s text_length=%d error=%v",
 			fileName,
 			detectedExtension,
 			parseResult.ParserName,

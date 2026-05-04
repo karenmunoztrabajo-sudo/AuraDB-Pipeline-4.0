@@ -154,6 +154,10 @@ func mimeTypeForExtension(ext string) string {
 		return "application/pdf"
 	case "docx":
 		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case "xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case "xls":
+		return "application/vnd.ms-excel"
 	case "jpg", "jpeg":
 		return "image/jpeg"
 	case "png":

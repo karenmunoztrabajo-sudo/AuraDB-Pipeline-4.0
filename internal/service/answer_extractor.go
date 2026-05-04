@@ -65,12 +65,15 @@ func TryExtractAnswer(question string, chunks []postgres.SearchResult) (string, 
 	}
 
 	if answer, cleanupApplied, ok := tryExtractExcelColumns(normalizedQuestion, chunks); ok {
+		log.Printf("excel_answer_type=columns")
 		return answer, "excel_columns", cleanupApplied, true
 	}
 	if answer, cleanupApplied, ok := tryExtractExcelCount(normalizedQuestion, chunks); ok {
+		log.Printf("excel_answer_type=row_count")
 		return answer, "excel_count", cleanupApplied, true
 	}
 	if answer, cleanupApplied, ok := tryExtractExcelFieldValue(normalizedQuestion, chunks); ok {
+		log.Printf("excel_answer_type=row_value")
 		return answer, "excel_field_value", cleanupApplied, true
 	}
 	if answer, cleanupApplied, ok := tryExtractComparison(normalizedQuestion, chunks); ok {
@@ -89,11 +92,63 @@ func TryExtractAnswer(question string, chunks []postgres.SearchResult) (string, 
 		return answer, "quantity", cleanupApplied, true
 	}
 
+	log.Printf("excel_answer_type=none")
 	return "", "none", false, false
 }
 
+type excelTableData struct {
+	Columns   []string
+	Rows      []map[string]string
+	TotalRows int
+}
+
+type excelNumericRow struct {
+	Row    map[string]string
+	Value  float64
+	Raw    string
+	Entity string
+}
+
+func TryAnalyzeExcel(question string, chunks []postgres.SearchResult) (string, string, int, bool) {
+	if len(chunks) == 0 {
+		return "", "none", 0, false
+	}
+
+	question = NormalizeQuestionForRetrieval(question)
+	normalizedQuestion := NormalizeSearchText(question)
+	if normalizedQuestion == "" {
+		return "", "none", 0, false
+	}
+
+	table := parseExcelTableData(chunks)
+	if len(table.Columns) == 0 && len(table.Rows) == 0 {
+		return "", "none", 0, false
+	}
+
+	if isExcelSummaryAnalysisQuestion(normalizedQuestion) {
+		return buildExcelSummaryAnswer(table), "summary", len(table.Rows), true
+	}
+	if isExcelGreaterThanFilterQuestion(normalizedQuestion) {
+		if answer, ok := buildExcelGreaterThanAnswer(normalizedQuestion, table); ok {
+			return answer, "filter", len(table.Rows), true
+		}
+	}
+	if isExcelMaxQuestion(normalizedQuestion) {
+		if answer, ok := buildExcelMaxAnswer(normalizedQuestion, table); ok {
+			return answer, "max", len(table.Rows), true
+		}
+	}
+	if isExcelInsightQuestion(normalizedQuestion) {
+		if answer, ok := buildExcelInsightAnswer(normalizedQuestion, table); ok {
+			return answer, "insight", len(table.Rows), true
+		}
+	}
+
+	return "", "none", len(table.Rows), false
+}
+
 func tryExtractExcelColumns(question string, chunks []postgres.SearchResult) (string, bool, bool) {
-	if !strings.Contains(question, "columna") {
+	if !isExcelColumnsQuestion(question) {
 		return "", false, false
 	}
 
@@ -107,12 +162,364 @@ func tryExtractExcelColumns(question string, chunks []postgres.SearchResult) (st
 			if columns == "" {
 				continue
 			}
-			answer := "Columnas: " + columns
+			answer := "El archivo tiene las columnas: " + formatExcelColumnsAnswer(columns) + "."
 			return answer, false, true
 		}
 	}
 
 	return "", false, false
+}
+
+func parseExcelTableData(chunks []postgres.SearchResult) excelTableData {
+	table := excelTableData{}
+	for _, chunk := range chunks {
+		for _, rawLine := range strings.Split(chunk.Content, "\n") {
+			line := strings.TrimSpace(rawLine)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "Columnas:") && len(table.Columns) == 0 {
+				table.Columns = splitExcelColumns(strings.TrimSpace(strings.TrimPrefix(line, "Columnas:")))
+				continue
+			}
+			if strings.HasPrefix(line, "Total de filas de datos:") {
+				total := strings.TrimSpace(strings.TrimPrefix(line, "Total de filas de datos:"))
+				if parsed, err := strconv.Atoi(total); err == nil {
+					table.TotalRows = parsed
+				}
+				continue
+			}
+			if strings.HasPrefix(line, "Fila ") {
+				values := parseExcelRowPairs(line)
+				if len(values) > 0 {
+					table.Rows = append(table.Rows, values)
+				}
+			}
+		}
+	}
+	if table.TotalRows == 0 {
+		table.TotalRows = len(table.Rows)
+	}
+	return table
+}
+
+func splitExcelColumns(columns string) []string {
+	parts := strings.Split(columns, ",")
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cleaned = append(cleaned, part)
+		}
+	}
+	return cleaned
+}
+
+func isExcelSummaryAnalysisQuestion(question string) bool {
+	return strings.Contains(question, "resume este archivo") ||
+		strings.Contains(question, "resume este documento") ||
+		strings.Contains(question, "resumir este archivo") ||
+		strings.Contains(question, "resumir este documento") ||
+		strings.Contains(question, "analiza este archivo") ||
+		strings.Contains(question, "analiza este documento") ||
+		strings.Contains(question, "que informacion hay")
+}
+
+func isExcelMaxQuestion(question string) bool {
+	return containsAny(question, "mayor valor", "valor mayor", "maximo valor", "valor maximo", "maxima valor", "valor maxima")
+}
+
+func isExcelGreaterThanFilterQuestion(question string) bool {
+	return containsAny(question, "mayor a", "mayor que", "superior a", "superior que")
+}
+
+func isExcelInsightQuestion(question string) bool {
+	return containsAny(question, "promedio", "media", "maximo", "maxima", "minimo", "minima", "conteo")
+}
+
+func buildExcelSummaryAnswer(table excelTableData) string {
+	rowCount := table.TotalRows
+	if rowCount == 0 {
+		rowCount = len(table.Rows)
+	}
+	columns := formatExcelColumnsAnswer(strings.Join(table.Columns, ", "))
+	if columns == "" {
+		columns = "sin columnas identificadas"
+	}
+
+	paragraphs := []string{
+		"El archivo contiene " + strconv.Itoa(rowCount) + " registros con columnas " + columns + ".",
+	}
+
+	normalizedColumns := normalizedExcelColumns(table.Columns)
+	if normalizedColumns["cliente"] && normalizedColumns["valor"] {
+		paragraphs = append(paragraphs, "Incluye información de clientes y sus valores asociados.")
+	}
+	if normalizedColumns["fecha"] && normalizedColumns["valor"] {
+		paragraphs = append(paragraphs, "Los datos parecen representar transacciones o registros financieros.")
+	}
+	if len(paragraphs) == 1 {
+		paragraphs = append(paragraphs, "La tabla contiene datos estructurados que pueden consultarse por columnas y filas.")
+	}
+
+	return strings.Join(paragraphs, "\n")
+}
+
+func buildExcelMaxAnswer(question string, table excelTableData) (string, bool) {
+	field := excelNumericFieldForQuestion(question, table)
+	if field == "" {
+		return "", false
+	}
+	rows := excelNumericRows(table, field)
+	if len(rows) == 0 {
+		return "", false
+	}
+	best := rows[0]
+	for _, row := range rows[1:] {
+		if row.Value > best.Value {
+			best = row
+		}
+	}
+	entityLabel := excelEntityLabel(best.Row)
+	fieldLabel := displayExcelAnswerTerm(field)
+	if fieldLabel == "" {
+		fieldLabel = "Valor"
+	}
+	if entityLabel != "" {
+		return "El cliente con mayor " + strings.ToLower(fieldLabel) + " es " + entityLabel + " con " + best.Raw + ".", true
+	}
+	return "El mayor " + strings.ToLower(fieldLabel) + " es " + best.Raw + ".", true
+}
+
+func buildExcelGreaterThanAnswer(question string, table excelTableData) (string, bool) {
+	threshold, ok := numericThresholdFromQuestion(question)
+	if !ok {
+		return "", false
+	}
+	field := excelNumericFieldForQuestion(question, table)
+	if field == "" {
+		return "", false
+	}
+	rows := excelNumericRows(table, field)
+	matches := make([]string, 0)
+	for _, row := range rows {
+		if row.Value <= threshold {
+			continue
+		}
+		if row.Entity != "" {
+			matches = append(matches, row.Entity+" ("+row.Raw+")")
+		} else {
+			matches = append(matches, row.Raw)
+		}
+	}
+	if len(matches) == 0 {
+		return "No encontré registros con " + field + " mayor a " + formatExcelNumber(threshold) + ".", true
+	}
+	return "Los clientes con " + field + " mayor a " + formatExcelNumber(threshold) + " son: " + strings.Join(matches, ", ") + ".", true
+}
+
+func buildExcelInsightAnswer(question string, table excelTableData) (string, bool) {
+	if strings.Contains(question, "conteo") {
+		return "El archivo contiene " + strconv.Itoa(table.TotalRows) + " registros.", true
+	}
+
+	field := excelNumericFieldForQuestion(question, table)
+	if field == "" {
+		return "", false
+	}
+	rows := excelNumericRows(table, field)
+	if len(rows) == 0 {
+		return "", false
+	}
+
+	minRow := rows[0]
+	maxRow := rows[0]
+	total := 0.0
+	for _, row := range rows {
+		total += row.Value
+		if row.Value < minRow.Value {
+			minRow = row
+		}
+		if row.Value > maxRow.Value {
+			maxRow = row
+		}
+	}
+	average := total / float64(len(rows))
+
+	if containsAny(question, "promedio", "media") {
+		return "El promedio de " + field + " es " + formatExcelNumber(average) + ".", true
+	}
+	if containsAny(question, "minimo", "minima") {
+		return "El valor mínimo de " + field + " es " + minRow.Raw + ".", true
+	}
+	if containsAny(question, "maximo", "maxima") {
+		return "El valor máximo de " + field + " es " + maxRow.Raw + ".", true
+	}
+
+	return "", false
+}
+
+func normalizedExcelColumns(columns []string) map[string]bool {
+	normalized := make(map[string]bool, len(columns))
+	for _, column := range columns {
+		column = NormalizeSearchText(column)
+		if column != "" {
+			normalized[column] = true
+		}
+	}
+	return normalized
+}
+
+func excelNumericFieldForQuestion(question string, table excelTableData) string {
+	for _, column := range table.Columns {
+		normalizedColumn := NormalizeSearchText(column)
+		if normalizedColumn != "" && strings.Contains(question, normalizedColumn) && excelColumnHasNumericValues(table, normalizedColumn) {
+			return normalizedColumn
+		}
+	}
+	for _, fallback := range []string{"valor", "monto", "total", "precio", "cantidad"} {
+		if excelColumnHasNumericValues(table, fallback) {
+			return fallback
+		}
+	}
+	return ""
+}
+
+func excelColumnHasNumericValues(table excelTableData, field string) bool {
+	for _, row := range table.Rows {
+		raw, ok := excelMatchField(row, field)
+		if !ok {
+			continue
+		}
+		if _, ok := parseExcelNumber(raw); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func excelNumericRows(table excelTableData, field string) []excelNumericRow {
+	rows := make([]excelNumericRow, 0, len(table.Rows))
+	for _, row := range table.Rows {
+		raw, ok := excelMatchField(row, field)
+		if !ok {
+			continue
+		}
+		value, ok := parseExcelNumber(raw)
+		if !ok {
+			continue
+		}
+		rows = append(rows, excelNumericRow{
+			Row:    row,
+			Value:  value,
+			Raw:    strings.TrimSpace(raw),
+			Entity: excelEntityLabel(row),
+		})
+	}
+	return rows
+}
+
+func excelEntityLabel(row map[string]string) string {
+	for _, field := range []string{"cliente", "nombre", "persona", "usuario"} {
+		if value, ok := excelMatchField(row, field); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	for key, value := range row {
+		if _, ok := parseExcelNumber(value); ok {
+			continue
+		}
+		if key == "fecha" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func numericThresholdFromQuestion(question string) (float64, bool) {
+	pattern := regexp.MustCompile(`(?:mayor|superior)\s+(?:a|que)\s+([0-9][0-9.,]*)`)
+	match := pattern.FindStringSubmatch(question)
+	if len(match) != 2 {
+		return 0, false
+	}
+	return parseExcelNumber(match[1])
+}
+
+func parseExcelNumber(value string) (float64, bool) {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "$€£ ")
+	value = strings.ReplaceAll(value, " ", "")
+	if value == "" {
+		return 0, false
+	}
+	if strings.Count(value, ".") == 1 && strings.Count(value, ",") == 0 {
+		parts := strings.Split(value, ".")
+		if len(parts) == 2 && len(parts[1]) == 3 {
+			value = parts[0] + parts[1]
+		}
+	}
+	if strings.Count(value, ",") == 1 && strings.Count(value, ".") == 0 {
+		parts := strings.Split(value, ",")
+		if len(parts) == 2 && len(parts[1]) == 3 {
+			value = parts[0] + parts[1]
+		} else {
+			value = parts[0] + "." + parts[1]
+		}
+	}
+	if strings.Contains(value, ".") && strings.Contains(value, ",") {
+		lastDot := strings.LastIndex(value, ".")
+		lastComma := strings.LastIndex(value, ",")
+		if lastComma > lastDot {
+			value = strings.ReplaceAll(value, ".", "")
+			value = strings.ReplaceAll(value, ",", ".")
+		} else {
+			value = strings.ReplaceAll(value, ",", "")
+		}
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func formatExcelNumber(value float64) string {
+	if value == float64(int64(value)) {
+		return strconv.FormatInt(int64(value), 10)
+	}
+	return strconv.FormatFloat(value, 'f', 2, 64)
+}
+
+func isExcelColumnsQuestion(question string) bool {
+	return strings.Contains(question, "que columnas") ||
+		strings.Contains(question, "cuales columnas") ||
+		strings.Contains(question, "columnas tiene") ||
+		strings.Contains(question, "columna")
+}
+
+func formatExcelColumnsAnswer(columns string) string {
+	parts := strings.Split(columns, ",")
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cleaned = append(cleaned, part)
+		}
+	}
+	if len(cleaned) == 0 {
+		return strings.TrimSpace(columns)
+	}
+	if len(cleaned) == 1 {
+		return cleaned[0]
+	}
+	if len(cleaned) == 2 {
+		return cleaned[0] + " y " + cleaned[1]
+	}
+	return strings.Join(cleaned[:len(cleaned)-1], ", ") + " y " + cleaned[len(cleaned)-1]
 }
 
 func tryExtractExcelCount(question string, chunks []postgres.SearchResult) (string, bool, bool) {
@@ -130,7 +537,7 @@ func tryExtractExcelCount(question string, chunks []postgres.SearchResult) (stri
 			if total == "" {
 				continue
 			}
-			return "Total de registros: " + total, false, true
+			return "El archivo contiene " + total + " registros.", false, true
 		}
 	}
 
@@ -143,7 +550,7 @@ func tryExtractExcelCount(question string, chunks []postgres.SearchResult) (stri
 		}
 	}
 	if count > 0 {
-		return "Total de registros visibles en el contexto: " + strconv.Itoa(count), false, true
+		return "El archivo contiene " + strconv.Itoa(count) + " registros.", false, true
 	}
 
 	return "", false, false
@@ -168,7 +575,7 @@ func tryExtractExcelFieldValue(question string, chunks []postgres.SearchResult) 
 			}
 
 			if value, ok := excelMatchField(values, field); ok {
-				return value, false, true
+				return formatExcelFieldValueAnswer(entity, field, value), false, true
 			}
 		}
 	}
@@ -663,7 +1070,7 @@ func parseExcelRowPairs(line string) map[string]string {
 		return nil
 	}
 
-	pairs := strings.Split(line[idx+1:], "|")
+	pairs := splitExcelRowPairs(line[idx+1:])
 	values := make(map[string]string, len(pairs))
 	for _, pair := range pairs {
 		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
@@ -678,6 +1085,53 @@ func parseExcelRowPairs(line string) map[string]string {
 		values[key] = value
 	}
 	return values
+}
+
+func splitExcelRowPairs(text string) []string {
+	if strings.Contains(text, "|") {
+		return strings.Split(text, "|")
+	}
+	return strings.Split(text, ",")
+}
+
+func formatExcelFieldValueAnswer(entity string, field string, value string) string {
+	entity = displayExcelAnswerTerm(entity)
+	field = displayExcelAnswerField(field)
+	value = strings.TrimSpace(value)
+	if entity == "" || field == "" || value == "" {
+		return value
+	}
+	return entity + " tiene " + field + " de " + value + "."
+}
+
+func displayExcelAnswerTerm(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	words := strings.Fields(value)
+	for i, word := range words {
+		runes := []rune(word)
+		if len(runes) == 0 {
+			continue
+		}
+		runes[0] = unicode.ToUpper(runes[0])
+		words[i] = string(runes)
+	}
+	return strings.Join(words, " ")
+}
+
+func displayExcelAnswerField(field string) string {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return ""
+	}
+	switch field {
+	case "valor":
+		return "un valor"
+	default:
+		return "un " + field
+	}
 }
 
 func excelRowContainsEntity(values map[string]string, entity string) bool {

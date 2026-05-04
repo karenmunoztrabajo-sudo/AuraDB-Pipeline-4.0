@@ -333,7 +333,7 @@ func uploadCategoryName(filename string, contentType string) string {
 func isDocumentUpload(filename string, contentType string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
-	case ".txt", ".pdf", ".docx", ".xlsx", ".csv":
+	case ".txt", ".pdf", ".docx", ".xlsx", ".xls", ".csv":
 		return true
 	}
 
@@ -343,7 +343,8 @@ func isDocumentUpload(filename string, contentType string) bool {
 		"application/csv",
 		"application/pdf",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.ms-excel":
 		return true
 	default:
 		return false
@@ -379,7 +380,7 @@ func isAllowedDocumentUpload(filename string, contentType string) bool {
 
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
-	case ".txt", ".pdf", ".docx", ".csv", ".xlsx":
+	case ".txt", ".pdf", ".docx", ".csv", ".xlsx", ".xls":
 		return true
 	}
 
@@ -389,7 +390,8 @@ func isAllowedDocumentUpload(filename string, contentType string) bool {
 		"application/csv",
 		"application/pdf",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.ms-excel":
 		return true
 	default:
 		return false

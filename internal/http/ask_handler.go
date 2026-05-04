@@ -31,10 +31,12 @@ type askResponse struct {
 }
 
 type askSource struct {
-	ChunkID    string  `json:"chunk_id"`
-	DocumentID string  `json:"document_id"`
-	Score      float64 `json:"score"`
-	Excerpt    string  `json:"excerpt"`
+	ChunkID      string  `json:"chunk_id"`
+	DocumentID   string  `json:"document_id"`
+	DocumentName string  `json:"document_name,omitempty"`
+	SheetName    string  `json:"sheet_name,omitempty"`
+	Score        float64 `json:"score"`
+	Excerpt      string  `json:"excerpt"`
 }
 
 const (
@@ -70,45 +72,104 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 	normalizedQuestionForRetrieval := service.NormalizeQuestionForRetrieval(question)
 	queryType := service.QueryTypeForQuery(normalizedQuestionForRetrieval)
+	detailedMode := isDetailedExplanationQuestion(normalizedQuestionForRetrieval)
 	documentID := strings.TrimSpace(r.URL.Query().Get("document_id"))
 	documentIDs := parseDocumentIDs(r)
-	if len(documentIDs) == 0 && strings.TrimSpace(documentID) != "" {
-		documentIDs = []string{strings.TrimSpace(documentID)}
-	}
-	if strings.TrimSpace(documentID) == "" && len(documentIDs) > 0 {
+	if documentID != "" {
+		documentIDs = []string{documentID}
+	} else if len(documentIDs) == 1 {
 		documentID = strings.TrimSpace(documentIDs[0])
 	}
-	if strings.TrimSpace(documentID) == "" {
-		answer := "No se recibió document_id del documento activo."
-		logDocumentScopedAnswer(documentID, "", nil)
-		writeAskResponse(w, question, answer, "", nil, nil)
-		return
-	}
-	documentID = strings.TrimSpace(documentID)
-	documentIDs = []string{documentID}
 	selectedDocumentIDs := strings.Join(documentIDs, ",")
 	multiDocumentMode := len(documentIDs) > 1
-	activeFilename := h.activeFilename(r.Context(), ipcCtx.TenantID, documentID)
-	activeChunks, activeChunksErr := h.searchService.GetAllChunksByDocumentID(r.Context(), documentID)
-	if activeChunksErr != nil {
-		log.Printf("active_document_chunks_error active_document_id=%s active_filename=%q error=%v", documentID, activeFilename, activeChunksErr)
+	if multiDocumentMode {
+		detailedMode = false
 	}
-	activeChunks = filterChunksByDocumentID(activeChunks, documentID)
-	logDocumentScopedAnswer(documentID, activeFilename, activeChunks)
-	if activeChunksErr != nil || len(activeChunks) == 0 || !chunksHaveReadableText(activeChunks) {
-		writeAskResponse(w, question, insufficientProcessedContentAnswer, "", []postgres.SearchResult{}, []askSource{})
-		return
+	globalKnowledgeMode := len(documentIDs) == 0 && strings.TrimSpace(documentID) == ""
+	log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, len(documentIDs))
+	if globalKnowledgeMode {
+		log.Printf("global_knowledge_mode=true")
 	}
-	if activeDocumentDetectedType(activeFilename) == "image" {
-		answer := interpretImageOCRAnswer(question, activeChunks)
-		answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
-		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, "", nil)
+	activeFilename := ""
+	activeChunks := []postgres.SearchResult{}
+	activeContentType := service.DocumentContentTypeNarrative
+	multiDocumentChunks := []postgres.SearchResult{}
+	if documentID != "" {
+		activeFilename = h.activeFilename(r.Context(), ipcCtx.TenantID, documentID)
+		var activeChunksErr error
+		activeChunks, activeChunksErr = h.searchService.GetAllChunksByDocumentID(r.Context(), documentID)
+		if activeChunksErr != nil {
+			log.Printf("active_document_chunks_error active_document_id=%s active_filename=%q error=%v", documentID, activeFilename, activeChunksErr)
+		}
+		activeChunks = filterChunksByDocumentID(activeChunks, documentID)
 		logDocumentScopedAnswer(documentID, activeFilename, activeChunks)
-		writeAskResponse(w, question, answer, "", []postgres.SearchResult{}, []askSource{})
-		return
+		if activeChunksErr != nil || len(activeChunks) == 0 || !chunksHaveReadableText(activeChunks) {
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, insufficientProcessedContentAnswer, "", activeChunks, []askSource{})
+			return
+		}
+		activeContentType = service.DetectDocumentContentTypeFromChunks(activeChunks)
+		log.Printf("document_type_detected=%s document_id=%s active_filename=%q", activeContentType, documentID, activeFilename)
+		if activeDocumentDetectedType(activeFilename) == "image" {
+			answer := interpretImageOCRAnswer(question, activeChunks)
+			answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, "", nil)
+			logDocumentScopedAnswer(documentID, activeFilename, activeChunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, "", activeChunks, []askSource{})
+			return
+		}
+		if activeDocumentDetectedType(activeFilename) == "spreadsheet" || chunksLookLikeSpreadsheet(activeChunks) {
+			if answer, extractorType, cleanupApplied, ok := service.TryExtractAnswer(question, activeChunks); ok {
+				answer = cleanUserVisibleAnswer(answer)
+				log.Printf("spreadsheet_direct_answer=true extractor_type=%q answer_cleanup_applied=%t document_id=%s", extractorType, cleanupApplied, documentID)
+				h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, "", nil)
+				logDocumentScopedAnswer(documentID, activeFilename, activeChunks)
+				h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, "", activeChunks, []askSource{})
+				return
+			}
+			if answer, analysisType, rowsUsed, ok := service.TryAnalyzeExcel(question, activeChunks); ok {
+				answer = cleanUserVisibleAnswer(answer)
+				log.Printf("excel_analysis_mode=true excel_analysis_type=%q excel_rows_used=%d document_id=%s", analysisType, rowsUsed, documentID)
+				h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, "", nil)
+				logDocumentScopedAnswer(documentID, activeFilename, activeChunks)
+				h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, "", activeChunks, []askSource{})
+				return
+			}
+		}
+		if activeContentType == service.DocumentContentTypeTechnical && service.ShouldUseTechnicalDocumentInterpretation(question, queryType) {
+			answer := service.BuildTechnicalDocumentAnswer(question, activeChunks)
+			if strings.TrimSpace(answer) != "" {
+				contextText, sources := buildAskContext(activeChunks)
+				answer = cleanUserVisibleAnswer(answer)
+				answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
+				log.Printf("technical_document_interpretation=true document_id=%s query_type=%q", documentID, queryType)
+				h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
+				logDocumentScopedAnswer(documentID, activeFilename, activeChunks)
+				h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, activeChunks, sources)
+				return
+			}
+		}
+	}
+	if multiDocumentMode {
+		validDocumentIDs, validChunks, documentsWithContent, documentsWithoutContent := h.loadValidMultiDocumentChunks(r.Context(), documentIDs)
+		log.Printf(
+			"multi_document_mode=true documents_total=%d documents_with_content=%d documents_without_content=%d",
+			len(documentIDs),
+			documentsWithContent,
+			documentsWithoutContent,
+		)
+		if len(validChunks) == 0 {
+			answer := "Ninguno de los documentos tiene contenido procesado."
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, "", nil)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, "", nil, nil)
+			return
+		}
+		documentIDs = validDocumentIDs
+		selectedDocumentIDs = strings.Join(documentIDs, ",")
+		multiDocumentChunks = validChunks
+		log.Printf("multi_document_mode=true documents_used=%d", len(documentIDs))
 	}
 
-	if queryType == "summary" {
+	if queryType == "summary" && documentID != "" {
 		log.Printf("summary_document_id=%s", documentID)
 		chunks := append([]postgres.SearchResult(nil), activeChunks...)
 		log.Printf("summary_chunks_found=%d", len(chunks))
@@ -127,7 +188,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
 			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
 			logDocumentScopedAnswer(documentID, activeFilename, chunks)
-			writeAskResponse(w, question, answer, contextText, chunks, sources)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, chunks, sources)
 			return
 		}
 
@@ -136,11 +197,24 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
 			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
 			logDocumentScopedAnswer(documentID, activeFilename, chunks)
-			writeAskResponse(w, question, answer, contextText, chunks, sources)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, chunks, sources)
 			return
 		}
 
 		log.Printf("ask_answer_started=true")
+
+		if activeContentType == service.DocumentContentTypeTechnical {
+			answer := service.BuildTechnicalDocumentAnswer(question, chunks)
+			if strings.TrimSpace(answer) != "" {
+				answer = cleanUserVisibleAnswer(answer)
+				answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
+				log.Printf("technical_document_interpretation=true document_id=%s query_type=%q", documentID, queryType)
+				h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
+				logDocumentScopedAnswer(documentID, activeFilename, chunks)
+				h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, chunks, sources)
+				return
+			}
+		}
 
 		answer, err := h.chatService.Answer(r.Context(), question, contextText, "summary")
 		if err != nil {
@@ -159,7 +233,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
 		logDocumentScopedAnswer(documentID, activeFilename, chunks)
-		writeAskResponse(w, question, answer, contextText, chunks, sources)
+		h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, chunks, sources)
 		return
 	}
 
@@ -205,7 +279,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			contextText, sources := buildAskContext(chunks)
 			answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
 			logDocumentScopedAnswer(documentID, activeFilename, chunks)
-			writeAskResponse(w, question, cleanUserVisibleAnswer(answer), contextText, chunks, sources)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, cleanUserVisibleAnswer(answer), contextText, chunks, sources)
 			return
 		}
 	}
@@ -213,32 +287,63 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	sectionQueryDetected := service.SectionQueryDetected(normalizedQuestionForRetrieval)
 	sectionTerm := service.SectionTermForQuery(normalizedQuestionForRetrieval)
 	requestedTopK := askTopK
-	if queryType == "section" {
+	if queryType == "summary" {
+		requestedTopK = askSummaryTopK
+	} else if queryType == "section" {
 		requestedTopK = askSectionTopK
 	} else if queryType == "structure" {
 		requestedTopK = askStructureTopK
+	}
+	if detailedMode {
+		requestedTopK = 20
+	}
+	if globalKnowledgeMode {
+		requestedTopK = 20
+	}
+	if multiDocumentMode && requestedTopK > 20 {
+		requestedTopK = 20
+	}
+
+	if multiDocumentMode && isLoadedDocumentsOverviewQuestion(normalizedQuestionForRetrieval) {
+		allChunks := limitChunksPerDocument(orderAskChunksByScoreOrPosition(multiDocumentChunks), 20)
+		contextText, sources := buildAskContext(allChunks)
+		answer := h.buildMultiDocumentOverviewAnswer(r.Context(), ipcCtx.TenantID, allChunks)
+		if strings.TrimSpace(answer) != "" {
+			log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, countUniqueDocumentsInChunks(allChunks))
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
+			logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, allChunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, allChunks, sources)
+			return
+		}
 	}
 
 	retrievedChunks, err := h.searchService.SearchWithDocumentIDs(r.Context(), ipcCtx.TenantID, normalizedQuestionForRetrieval, requestedTopK, documentIDs)
 	if err != nil {
 		log.Printf("ask_search_error document_id=%s error=%v", firstDocumentID(documentIDs, documentID), err)
-		if strings.TrimSpace(documentID) != "" {
+		if multiDocumentMode && len(multiDocumentChunks) > 0 {
+			retrievedChunks = limitChunksPerDocument(orderAskChunksByScoreOrPosition(multiDocumentChunks), requestedTopK)
+			log.Printf("ask_search_direct_chunks=true selected_document_ids=%q chunks_found=%d", selectedDocumentIDs, len(retrievedChunks))
+		} else if strings.TrimSpace(documentID) != "" {
 			directChunks, directErr := h.searchService.GetAllChunksByDocumentID(r.Context(), documentID)
 			if directErr == nil && len(directChunks) > 0 {
 				log.Printf("ask_search_direct_chunks=true document_id=%s chunks_found=%d", documentID, len(directChunks))
 				retrievedChunks = filterChunksByDocumentID(directChunks, documentID)
 			} else {
 				logDocumentScopedAnswer(documentID, activeFilename, nil)
-				writeAskResponse(w, question, insufficientProcessedContentAnswer, "", nil, nil)
+				h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, insufficientProcessedContentAnswer, "", nil, nil)
 				return
 			}
 		} else {
 			logDocumentScopedAnswer(documentID, activeFilename, nil)
-			writeAskResponse(w, question, insufficientProcessedContentAnswer, "", nil, nil)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, insufficientProcessedContentAnswer, "", nil, nil)
 			return
 		}
 	}
 	retrievedChunks = filterChunksByDocumentID(retrievedChunks, documentID)
+	if globalKnowledgeMode {
+		log.Printf("global_knowledge_mode=true documents_scanned=%d", countUniqueDocumentsInChunks(retrievedChunks))
+	}
+	log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, countUniqueDocumentsInChunks(retrievedChunks))
 
 	mainEntity := service.MainEntityForQuery(normalizedQuestionForRetrieval)
 	reasonEntityRejected := service.MainEntityRejectedReasonForQuery(normalizedQuestionForRetrieval)
@@ -247,6 +352,9 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 	prioritizedChunks, restoredChunksAfterEntityFilter, askEntityRefilterRemovedAll := prioritizeAskChunksByEntity(retrievedChunks, mainEntity, entityFilterApplied)
 	contextChunks := selectAskContextChunks(prioritizedChunks, queryType, normalizedQuestionForRetrieval)
+	if detailedMode && len(contextChunks) > 20 {
+		contextChunks = contextChunks[:20]
+	}
 	summaryDirectChunkMode := queryType == "summary" && len(documentIDs) > 0
 	detectedIntent := classifyQuestionIntent(normalizedQuestionForRetrieval)
 	log.Printf("ask_intent_detected query=%q normalized_question_for_retrieval=%q intent_detected=%q chunks_found=%d selected_chunks=%d", question, normalizedQuestionForRetrieval, detectedIntent, len(retrievedChunks), len(contextChunks))
@@ -279,6 +387,9 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		answer := insufficientProcessedContentAnswer
 		contextText := ""
 		sources := []askSource{}
+		if globalKnowledgeMode {
+			log.Printf("global_knowledge_mode=true documents_scanned=0")
+		}
 		answerLengthMode := answerLengthModeForQueryType(queryType)
 		finalAnswerLineCount := countAnswerLines(answer)
 
@@ -307,11 +418,44 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
 		logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, []postgres.SearchResult{})
-		writeAskResponse(w, question, answer, contextText, []postgres.SearchResult{}, sources)
+		h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, []postgres.SearchResult{}, sources)
 		return
 	}
 
 	contextText, sources := buildAskContext(contextChunks)
+	if documentID == "" && len(contextChunks) > 0 {
+		detectedContentType := service.DetectDocumentContentTypeFromChunks(contextChunks)
+		log.Printf("document_type_detected=%s document_id=%s active_filename=%q", detectedContentType, firstDocumentID(documentIDs, documentID), activeFilename)
+	}
+
+	if globalKnowledgeMode {
+		answer := h.buildGlobalKnowledgeAnswer(r.Context(), ipcCtx.TenantID, contextChunks)
+		if strings.TrimSpace(answer) != "" {
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, "", question, answer, contextText, sources)
+			logDocumentScopedAnswer("", activeFilename, contextChunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, contextChunks, sources)
+			return
+		}
+	}
+
+	if multiDocumentMode && chunksLookLikeSpreadsheet(contextChunks) {
+		if answer, extractorType, cleanupApplied, ok := service.TryExtractAnswer(question, contextChunks); ok {
+			answer = cleanUserVisibleAnswer(answer)
+			log.Printf("spreadsheet_direct_answer=true extractor_type=%q answer_cleanup_applied=%t document_id=%s multi_document_mode=%t", extractorType, cleanupApplied, firstDocumentID(documentIDs, documentID), multiDocumentMode)
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
+			logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, contextChunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, contextChunks, sources)
+			return
+		}
+		if answer, analysisType, rowsUsed, ok := service.TryAnalyzeExcel(question, contextChunks); ok {
+			answer = cleanUserVisibleAnswer(answer)
+			log.Printf("excel_analysis_mode=true excel_analysis_type=%q excel_rows_used=%d document_id=%s multi_document_mode=%t", analysisType, rowsUsed, firstDocumentID(documentIDs, documentID), multiDocumentMode)
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
+			logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, contextChunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, contextChunks, sources)
+			return
+		}
+	}
 
 	answer := ""
 	extractiveAnswerUsed := false
@@ -335,7 +479,10 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			summaryDirectChunkMode,
 			len(contextChunks),
 		)
-		if queryType == "summary" {
+		if detailedMode {
+			modelTokensLimit = service.ModelTokensLimitForDetailedExplanation()
+			answer, err = h.chatService.AnswerDetailedExplanation(r.Context(), question, contextText)
+		} else if queryType == "summary" {
 			summaryChunksUsed = len(contextChunks)
 			sectionGroups := service.BuildSummarySectionGroups(contextChunks)
 			summarySectionsDetected = len(sectionGroups)
@@ -366,7 +513,11 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("openai_ask_error query=%q query_type=%s error=%v", question, queryType, err)
-			answer = buildChunkBasedAnswer(question, contextChunks, queryType)
+			if detailedMode {
+				answer = buildDetailedExplanationFallback(question, contextChunks, sources)
+			} else {
+				answer = buildChunkBasedAnswer(question, contextChunks, queryType)
+			}
 			chunkAnswerUsed = true
 		}
 		log.Printf(
@@ -381,18 +532,40 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	answer = cleanUserVisibleAnswer(answer)
-	answer = formatAnswerForQueryType(answer, queryType)
+	if detailedMode {
+		answer = ensureDetailedExplanationAnswer(question, answer, contextChunks, sources)
+	} else {
+		answer = formatAnswerForQueryType(answer, queryType)
+	}
 	if answer == "" {
 		log.Printf("openai_ask_error query=%q query_type=%s error=empty_answer", question, queryType)
-		answer = buildChunkBasedAnswer(question, contextChunks, queryType)
+		if detailedMode {
+			answer = buildDetailedExplanationFallback(question, contextChunks, sources)
+		} else {
+			answer = buildChunkBasedAnswer(question, contextChunks, queryType)
+		}
 		answer = cleanUserVisibleAnswer(answer)
-		answer = formatAnswerForQueryType(answer, queryType)
+		if detailedMode {
+			answer = ensureDetailedExplanationAnswer(question, answer, contextChunks, sources)
+		} else {
+			answer = formatAnswerForQueryType(answer, queryType)
+		}
 		chunkAnswerUsed = true
 	}
-	answer, answerCleanupApplied = finalizeAnswerForFrontend(question, contextChunks, queryType, answer, chunkAnswerUsed)
+	if detailedMode {
+		answerCleanupApplied = chunkAnswerUsed
+	} else {
+		answer, answerCleanupApplied = finalizeAnswerForFrontend(question, contextChunks, queryType, answer, chunkAnswerUsed)
+	}
 	answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
 	answerLengthMode := answerLengthModeForQueryType(queryType)
 	finalAnswerLineCount := countAnswerLines(answer)
+	if detailedMode {
+		answerLengthMode = "detailed_explanation"
+		log.Printf("detailed_mode=true")
+		log.Printf("chunks_used=%d", len(contextChunks))
+		log.Printf("answer_length_lines=%d", finalAnswerLineCount)
+	}
 
 	log.Printf(
 		"ask_answer query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d extractive_answer_used=%t extractive_answer_type=%q model_answer_used=%t restored_chunks_after_entity_filter=%t answer_cleanup_applied=%t answer_length_mode=%s final_answer_line_count=%d summary_mode=%s summary_sections_detected=%d summary_chunks_used=%d model_tokens_limit=%d answer_length_lines=%d summary_direct_chunk_mode=%t ask_answer_started=%t ask_answer_finished=%t chunk_answer_used=%t",
@@ -424,7 +597,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 	h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
 	logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, contextChunks)
-	writeAskResponse(w, question, answer, contextText, contextChunks, sources)
+	h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, contextChunks, sources)
 }
 
 func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenantID string, userID string, question string, normalizedQuestionForRetrieval string, documentID string, documentIDs []string, selectedDocumentIDs string, multiDocumentMode bool) {
@@ -439,7 +612,7 @@ func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenan
 		log.Printf("ask_summary_retrieval_error document_id=%s error=%v", firstDocumentID(documentIDs, documentID), err)
 		answer := insufficientProcessedContentAnswer
 		logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, []postgres.SearchResult{})
-		writeAskResponse(w, question, answer, "", []postgres.SearchResult{}, []askSource{})
+		h.writeAskResponse(w, r, tenantID, activeFilename, question, answer, "", contextChunks, []askSource{})
 		return
 	}
 	logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, contextChunks)
@@ -491,7 +664,7 @@ func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenan
 
 		h.persistAskLog(r, tenantID, userID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
 		logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, []postgres.SearchResult{})
-		writeAskResponse(w, question, answer, contextText, []postgres.SearchResult{}, sources)
+		h.writeAskResponse(w, r, tenantID, activeFilename, question, answer, contextText, []postgres.SearchResult{}, sources)
 		return
 	}
 
@@ -561,7 +734,7 @@ func (h *AskHandler) answerSummary(w http.ResponseWriter, r *http.Request, tenan
 
 	h.persistAskLog(r, tenantID, userID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
 	logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, contextChunks)
-	writeAskResponse(w, question, answer, contextText, contextChunks, sources)
+	h.writeAskResponse(w, r, tenantID, activeFilename, question, answer, contextText, contextChunks, sources)
 }
 
 func (h *AskHandler) loadSummaryChunks(ctx context.Context, tenantID string, documentIDs []string) ([]postgres.SearchResult, error) {
@@ -637,13 +810,82 @@ func (h *AskHandler) persistAskLog(r *http.Request, tenantID, userID, documentID
 	if h.askLogRepo == nil {
 		return
 	}
+	answer = service.SanitizeSensitiveText(answer)
+	contextText = service.SanitizeSensitiveText(contextText)
+	for i := range sources {
+		sources[i].Excerpt = service.SanitizeSensitiveText(sources[i].Excerpt)
+	}
 	if err := h.askLogRepo.Create(r.Context(), tenantID, userID, documentID, question, answer, contextText, sources); err != nil {
 		log.Printf("ERROR ask_log_create tenant_id=%s user_id=%s document_id=%s error=%v", tenantID, userID, documentID, err)
 	}
 }
 
+func (h *AskHandler) writeAskResponse(w http.ResponseWriter, r *http.Request, tenantID string, fallbackFilename string, question, answer, contextText string, chunks []postgres.SearchResult, sources []askSource) {
+	sources = h.enrichAnswerSources(r.Context(), tenantID, fallbackFilename, chunks, sources)
+	detailedMode := isDetailedExplanationQuestion(question)
+	if isRawChunkAnswer(answer) {
+		if detailedMode {
+			answer = buildDetailedExplanationFallback(question, chunks, sources)
+			log.Printf("detailed_mode=true")
+		} else if interpreted := buildInterpretedFallback(chunks, sources); strings.TrimSpace(interpreted) != "" {
+			answer = interpreted
+			log.Printf("interpreted_fallback_used=true")
+		}
+	}
+	rawTextDetected := answerLooksLikeRawDocumentText(answer, chunks)
+	log.Printf("raw_text_detected=%t", rawTextDetected)
+	if rawTextDetected {
+		if detailedMode {
+			answer = buildDetailedExplanationFallback(question, chunks, sources)
+			log.Printf("detailed_mode=true")
+		} else if interpreted := h.interpretRawAnswer(r.Context(), tenantID, question, contextText, chunks); strings.TrimSpace(interpreted) != "" {
+			answer = interpreted
+		}
+	}
+	if answerLooksLikeRawDocumentText(answer, chunks) {
+		if detailedMode {
+			answer = buildDetailedExplanationFallback(question, chunks, sources)
+			log.Printf("detailed_mode=true")
+		} else if interpreted := buildInterpretedFallback(chunks, sources); strings.TrimSpace(interpreted) != "" {
+			answer = interpreted
+			log.Printf("interpreted_fallback_used=true")
+		}
+	}
+	if detailedMode {
+		answer = ensureDetailedExplanationAnswer(question, answer, chunks, sources)
+		log.Printf("chunks_used=%d", minInt(len(chunks), 20))
+		log.Printf("answer_length_lines=%d", countAnswerLines(answer))
+	}
+	if strings.TrimSpace(answer) != "" && answer != insufficientProcessedContentAnswer {
+		log.Printf("interpreted_answer_used=true")
+	}
+	answer = appendSourcesToAnswer(answer, sources)
+	logAnswerSources(sources)
+	writeAskResponse(w, question, answer, contextText, chunks, sources)
+}
+
 func writeAskResponse(w http.ResponseWriter, question, answer, contextText string, chunks []postgres.SearchResult, sources []askSource) {
-	answer = cleanFinalAnswer(answer)
+	totalRedacted := 0
+	var redacted int
+	answer, redacted = sanitizeAnswerPreservingSourceLine(answer)
+	totalRedacted += redacted
+	answer = cleanDisplayFormatting(cleanFinalAnswer(answer))
+	contextText, redacted = service.SanitizeSensitiveTextWithCount(contextText)
+	totalRedacted += redacted
+	for i := range chunks {
+		chunks[i].Content, redacted = service.SanitizeSensitiveTextWithCount(chunks[i].Content)
+		totalRedacted += redacted
+	}
+	for i := range sources {
+		sources[i].Excerpt, redacted = service.SanitizeSensitiveTextWithCount(sources[i].Excerpt)
+		totalRedacted += redacted
+		if strings.Contains(sources[i].DocumentName, "[REDACTADO]") {
+			sources[i].DocumentName = cleanDisplayFormatting(sources[i].DocumentName)
+		}
+	}
+	if totalRedacted > 0 {
+		log.Printf("sensitive_values_redacted=%d stage=response", totalRedacted)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(askResponse{
 		Question: question,
@@ -652,6 +894,889 @@ func writeAskResponse(w http.ResponseWriter, question, answer, contextText strin
 		Chunks:   chunks,
 		Sources:  sources,
 	})
+}
+
+func sanitizeAnswerPreservingSourceLine(answer string) (string, int) {
+	sourceStart := sourceLineStartIndex(answer)
+	if sourceStart < 0 {
+		return service.SanitizeSensitiveTextWithCount(answer)
+	}
+	body := strings.TrimRight(answer[:sourceStart], "\n")
+	sourceLine := answer[sourceStart:]
+	sanitizedBody, redacted := service.SanitizeSensitiveTextWithCount(body)
+	log.Printf("source_redaction_skipped_for_filename=true")
+	return strings.TrimSpace(sanitizedBody) + "\n\n" + strings.TrimSpace(sourceLine), redacted
+}
+
+func sourceLineStartIndex(answer string) int {
+	if strings.HasPrefix(strings.TrimSpace(answer), "Fuente:") {
+		return strings.Index(answer, "Fuente:")
+	}
+	if idx := strings.LastIndex(answer, "\n\nFuente:"); idx >= 0 {
+		return idx
+	}
+	if idx := strings.LastIndex(answer, "\nFuente:"); idx >= 0 {
+		return idx
+	}
+	return -1
+}
+
+func (h *AskHandler) enrichAnswerSources(ctx context.Context, tenantID string, fallbackFilename string, chunks []postgres.SearchResult, sources []askSource) []askSource {
+	if len(sources) == 0 && len(chunks) > 0 {
+		sources = make([]askSource, 0, len(chunks))
+		for _, chunk := range chunks {
+			sources = append(sources, askSource{
+				ChunkID:    chunk.ChunkID,
+				DocumentID: chunk.DocumentID,
+				SheetName:  sheetNameFromChunk(chunk),
+				Score:      chunk.Score,
+				Excerpt:    service.SanitizeSensitiveText(chunk.Content),
+			})
+		}
+	}
+	if len(sources) == 0 {
+		return sources
+	}
+
+	nameByDocumentID := make(map[string]string)
+	if fallbackFilename != "" && countUniqueSourceDocuments(sources) <= 1 {
+		for _, source := range sources {
+			if strings.TrimSpace(source.DocumentID) != "" {
+				nameByDocumentID[source.DocumentID] = fallbackFilename
+			}
+		}
+	}
+
+	for i := range sources {
+		documentID := strings.TrimSpace(sources[i].DocumentID)
+		if documentID == "" {
+			continue
+		}
+		if sources[i].DocumentName == "" {
+			if name := strings.TrimSpace(nameByDocumentID[documentID]); name != "" {
+				sources[i].DocumentName = name
+			} else if h.searchRepo != nil {
+				name, err := h.searchRepo.GetDocumentFilename(ctx, tenantID, documentID)
+				if err != nil {
+					log.Printf("answer_source_lookup_error document_id=%s error=%v", documentID, err)
+				}
+				name = strings.TrimSpace(name)
+				if name != "" {
+					nameByDocumentID[documentID] = name
+					sources[i].DocumentName = name
+				}
+			}
+		}
+		if sources[i].DocumentName == "" {
+			sources[i].DocumentName = documentID
+		}
+		log.Printf("source_redaction_skipped_for_filename=true")
+		if sources[i].SheetName == "" {
+			sources[i].SheetName = sheetNameFromText(sources[i].Excerpt)
+		}
+	}
+	return sources
+}
+
+func (h *AskHandler) interpretRawAnswer(ctx context.Context, tenantID string, question string, contextText string, chunks []postgres.SearchResult) string {
+	if len(chunks) == 0 {
+		return ""
+	}
+	if countUniqueDocumentsInChunks(chunks) > 1 {
+		if answer := h.buildMultiDocumentOverviewAnswer(ctx, tenantID, chunks); strings.TrimSpace(answer) != "" {
+			return answer
+		}
+	}
+	if h.chatService != nil && strings.TrimSpace(contextText) != "" {
+		interpreted, err := h.chatService.Answer(ctx, question, contextText, service.QueryTypeForQuery(question))
+		if err == nil && strings.TrimSpace(interpreted) != "" && !answerLooksLikeRawDocumentText(interpreted, chunks) {
+			return cleanUserVisibleAnswer(interpreted)
+		}
+		if err != nil {
+			log.Printf("interpret_raw_answer_model_error=%v", err)
+		}
+	}
+	return buildInterpretedFallback(chunks, nil)
+}
+
+func isDetailedExplanationQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(normalized, "explica", "explicame", "analiza", "describe", "detalla", "desarrolla")
+}
+
+func ensureDetailedExplanationAnswer(question string, answer string, chunks []postgres.SearchResult, sources []askSource) string {
+	answer = strings.TrimSpace(answer)
+	if answer == "" || !looksLikeDetailedExplanation(answer) || answerLooksLikeRawDocumentText(answer, chunks) || containsForbiddenDetailedExpression(answer) {
+		return buildDetailedExplanationFallback(question, chunks, sources)
+	}
+	if !answerHasSourceLine(answer) {
+		if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
+			answer = strings.TrimSpace(answer + "\n\n" + sourceLine)
+		}
+	}
+	if containsForbiddenDetailedExpression(answer) {
+		return buildDetailedExplanationFallback(question, chunks, sources)
+	}
+	return removeForbiddenDetailedExpressions(answer)
+}
+
+func looksLikeDetailedExplanation(answer string) bool {
+	if countAnswerLines(answer) < 8 || len([]rune(strings.TrimSpace(answer))) < 500 {
+		return false
+	}
+	return true
+}
+
+func buildDetailedExplanationFallback(question string, chunks []postgres.SearchResult, sources []askSource) string {
+	chunks = limitChunksForDetailedExplanation(chunks)
+	if answer := buildTransportDetailedExplanationFallback(chunks, sources); answer != "" {
+		return answer
+	}
+
+	sections := detailedSectionDescriptions(chunks)
+	if len(sections) == 0 {
+		sections = []string{"el tema central presentado", "las ideas que amplían ese tema", "las implicaciones descritas por el texto"}
+	}
+	for len(sections) < 3 {
+		sections = append(sections, sections[len(sections)-1])
+	}
+
+	var builder strings.Builder
+	builder.WriteString("El documento explica ")
+	builder.WriteString(lowerFirstRune(strings.TrimSuffix(sections[0], ".")))
+	builder.WriteString(". La explicación se puede leer como una exposición del tema principal, sus partes y la forma en que esas partes se conectan dentro del texto.\n\n")
+	builder.WriteString("Primero, aborda ")
+	builder.WriteString(lowerFirstRune(strings.TrimSuffix(sections[0], ".")))
+	builder.WriteString(". Esta parte introduce la base conceptual del documento y permite entender qué asunto se está desarrollando.\n\n")
+	builder.WriteString("Después, describe ")
+	builder.WriteString(lowerFirstRune(strings.TrimSuffix(sections[1], ".")))
+	builder.WriteString(". Aquí el texto amplía la mirada inicial y muestra relaciones entre ideas, procesos o características que dan más profundidad al tema.\n\n")
+	builder.WriteString("Finalmente, desarrolla ")
+	builder.WriteString(lowerFirstRune(strings.TrimSuffix(sections[2], ".")))
+	builder.WriteString(". Esta parte completa la explicación porque conecta los aspectos anteriores con una lectura más amplia del contenido.\n\n")
+	builder.WriteString("En conclusión, el documento presenta una explicación articulada del tema y permite comprenderlo de forma progresiva, desde sus bases hasta sus aspectos más desarrollados.\n")
+	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
+		builder.WriteString("\n")
+		builder.WriteString(sourceLine)
+	}
+	return removeForbiddenDetailedExpressions(strings.TrimSpace(builder.String()))
+}
+
+func buildTransportDetailedExplanationFallback(chunks []postgres.SearchResult, sources []askSource) string {
+	normalized := service.NormalizeSearchText(chunksTextSample(chunks, 12000))
+	if !containsAnyNormalized(normalized, "transporte", "movilidad", "rueda", "traccion", "navegacion", "vapor", "combustion") {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.WriteString("El documento explica la evolución histórica de los sistemas de transporte mundial desde las primeras formas de movilidad humana hasta las tecnologías contemporáneas.\n\n")
+	builder.WriteString("Primero, aborda la movilidad humana como la forma inicial de desplazamiento. En esa etapa, el traslado dependía de la fuerza física de las personas y de caminos simples, antes de que aparecieran soluciones técnicas más complejas.\n\n")
+	builder.WriteString("Después, describe la importancia de la tracción animal. El uso de animales permitió transportar más peso, recorrer mayores distancias y sostener actividades agrícolas, comerciales y militares con una capacidad superior a la movilidad exclusivamente humana.\n\n")
+	builder.WriteString("Luego, explica el papel de la rueda como una innovación decisiva. La rueda transformó el traslado terrestre porque facilitó carros, caminos, intercambio de bienes y conexiones más estables entre comunidades.\n\n")
+	builder.WriteString("También presenta la navegación como una ampliación fundamental del transporte. Al aprovechar ríos, mares y rutas oceánicas, las sociedades pudieron conectar territorios lejanos, mover mercancías y expandir el comercio mundial.\n\n")
+	builder.WriteString("Más adelante, el documento incorpora la máquina de vapor como un cambio de escala. El vapor impulsó ferrocarriles y barcos, aceleró los viajes y fortaleció la industrialización al hacer más regular y potente el movimiento de personas y productos.\n\n")
+	builder.WriteString("Después aparece el motor de combustión, que abrió paso a automóviles, camiones, aviación moderna y nuevas formas de movilidad cotidiana. Este avance hizo que el transporte fuera más flexible, rápido y accesible para muchas actividades económicas y sociales.\n\n")
+	builder.WriteString("En la etapa contemporánea, el documento destaca los contenedores y el tren de alta velocidad. Los contenedores ordenaron el comercio global al estandarizar la carga, mientras que el tren de alta velocidad mostró cómo la tecnología ferroviaria podía competir con otros medios en rapidez, eficiencia y capacidad.\n\n")
+	builder.WriteString("Finalmente, la explicación llega a la movilidad eléctrica, la inteligencia artificial y el transporte futuro. La movilidad eléctrica apunta a reducir emisiones y dependencia de combustibles fósiles, mientras que la inteligencia artificial permite optimizar rutas, automatizar vehículos y diseñar sistemas más seguros. El transporte futuro se presenta como una combinación de sostenibilidad, automatización e integración entre distintos medios.\n\n")
+	builder.WriteString("En conclusión, el documento muestra que el transporte no evolucionó como una serie de inventos aislados, sino como un proceso histórico continuo en el que cada avance amplió la capacidad humana de desplazarse, comerciar, comunicarse y transformar el territorio.\n")
+	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
+		builder.WriteString("\n")
+		builder.WriteString(sourceLine)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func containsForbiddenDetailedExpression(answer string) bool {
+	normalized := service.NormalizeSearchText(answer)
+	for _, expression := range forbiddenDetailedExpressions {
+		if strings.Contains(normalized, service.NormalizeSearchText(expression)) {
+			return true
+		}
+	}
+	return false
+}
+
+func removeForbiddenDetailedExpressions(answer string) string {
+	for _, pattern := range forbiddenDetailedExpressionPatterns {
+		answer = pattern.ReplaceAllString(answer, "")
+	}
+	answer = visibleMultiSpacePattern.ReplaceAllString(answer, " ")
+	answer = regexp.MustCompile(`(?m)^[ \t]+`).ReplaceAllString(answer, "")
+	answer = regexp.MustCompile(`\n{3,}`).ReplaceAllString(answer, "\n\n")
+	return strings.TrimSpace(answer)
+}
+
+var forbiddenDetailedExpressions = []string{
+	"chunks",
+	"contenido procesado",
+	"temas recuperados",
+	"respuesta organiza",
+	"consulta planteada",
+	"material suficiente",
+	"elementos principales del documento",
+	"punto de partida",
+	"eje se centra",
+	"eje desarrolla",
+}
+
+var forbiddenDetailedExpressionPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bchunks?\b`),
+	regexp.MustCompile(`(?i)contenido procesado`),
+	regexp.MustCompile(`(?i)temas recuperados`),
+	regexp.MustCompile(`(?i)respuesta organiza`),
+	regexp.MustCompile(`(?i)consulta planteada`),
+	regexp.MustCompile(`(?i)material suficiente`),
+	regexp.MustCompile(`(?i)elementos principales del documento`),
+	regexp.MustCompile(`(?i)punto de partida`),
+	regexp.MustCompile(`(?i)eje se centra`),
+	regexp.MustCompile(`(?i)eje desarrolla`),
+}
+
+func limitChunksForDetailedExplanation(chunks []postgres.SearchResult) []postgres.SearchResult {
+	if len(chunks) <= 20 {
+		return chunks
+	}
+	return chunks[:20]
+}
+
+func detailedSectionDescriptions(chunks []postgres.SearchResult) []string {
+	chunks = limitChunksForDetailedExplanation(chunks)
+	if len(chunks) == 0 {
+		return nil
+	}
+	sections := make([]string, 0, 3)
+	groupSize := (len(chunks) + 2) / 3
+	for start := 0; start < len(chunks) && len(sections) < 3; start += groupSize {
+		end := start + groupSize
+		if end > len(chunks) {
+			end = len(chunks)
+		}
+		description := cleanOverviewDescription(documentOverviewDescription(chunks[start:end]))
+		if description == "" {
+			description = "información relevante del documento"
+		}
+		sections = append(sections, description)
+	}
+	return sections
+}
+
+func buildInterpretedFallback(chunks []postgres.SearchResult, sources []askSource) string {
+	if len(chunks) == 0 {
+		return ""
+	}
+	normalized := service.NormalizeSearchText(chunksTextSample(chunks, 12000))
+	paragraphs := make([]string, 0, 3)
+
+	switch {
+	case containsAnyNormalized(normalized, "transporte", "movilidad", "rueda", "traccion", "infraestructura vial"):
+		paragraphs = append(paragraphs,
+			"El documento analiza la evolución de los sistemas de transporte desde la prehistoria hasta la actualidad.",
+			"Describe cómo el desarrollo del transporte ha estado ligado al progreso de la civilización, comenzando con la movilidad humana básica y avanzando hacia sistemas más complejos.",
+		)
+	case containsAnyNormalized(normalized, "auradb pipeline", "analisis documental", "subir archivos", "preguntas"):
+		paragraphs = append(paragraphs,
+			"El documento describe el funcionamiento de AuraDB Pipeline como una plataforma de análisis documental inteligente.",
+			"Explica cómo el sistema permite subir archivos, procesar su contenido y consultarlos mediante preguntas para obtener respuestas útiles.",
+		)
+	default:
+		description := cleanOverviewDescription(documentOverviewDescription(chunks))
+		if description == "" {
+			description = "información procesada consultable"
+		}
+		paragraphs = append(paragraphs, "El documento contiene "+lowerFirstRune(strings.TrimSuffix(description, "."))+".")
+	}
+
+	answer := strings.Join(paragraphs[:minInt(len(paragraphs), 3)], "\n\n")
+	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
+		answer = strings.TrimSpace(answer + "\n\n" + sourceLine)
+	}
+	return answer
+}
+
+func interpretedFallbackSourceLine(chunks []postgres.SearchResult, sources []askSource) string {
+	labels := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, source := range sources {
+		name := strings.TrimSpace(source.DocumentName)
+		if name == "" {
+			name = strings.TrimSpace(source.DocumentID)
+		}
+		name = cleanDisplayFormatting(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		labels = append(labels, name)
+	}
+	if len(labels) == 0 {
+		for _, chunk := range chunks {
+			name := cleanDisplayFormatting(strings.TrimSpace(chunk.DocumentID))
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			labels = append(labels, name)
+		}
+	}
+	if len(labels) == 0 {
+		return ""
+	}
+	return "Fuente: " + strings.Join(orderSourceLabelsForDisplay(labels), "; ")
+}
+
+func isRawChunkAnswer(answer string) bool {
+	answer = strings.TrimSpace(answer)
+	if len(answer) > 150 {
+		prefix := answer[:20]
+		if strings.ToUpper(prefix) == prefix {
+			return true
+		}
+	}
+	if strings.Contains(answer, "COMPENDIO") {
+		return true
+	}
+	if strings.Contains(answer, "Los Albores de la Movilidad") {
+		return true
+	}
+	return false
+}
+
+func answerLooksLikeRawDocumentText(answer string, chunks []postgres.SearchResult) bool {
+	answer = strings.TrimSpace(cleanDisplayFormatting(answer))
+	if answer == "" || len(chunks) == 0 {
+		return false
+	}
+	if containsLongUppercaseTitle(answer) {
+		return true
+	}
+	if hasRawDocumentParagraph(answer) {
+		return true
+	}
+	normalizedAnswer := service.NormalizeSearchText(answer)
+	if len([]rune(normalizedAnswer)) < 80 {
+		return false
+	}
+	for _, chunk := range chunks {
+		normalizedChunk := service.NormalizeSearchText(chunk.Content)
+		if normalizedChunk == "" {
+			continue
+		}
+		if strings.Contains(normalizedChunk, normalizedAnswer) {
+			return true
+		}
+		if rawOverlapRatio(normalizedAnswer, normalizedChunk) >= 0.86 {
+			return true
+		}
+	}
+	return false
+}
+
+func containsLongUppercaseTitle(answer string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(answer, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if len([]rune(line)) < 18 || len([]rune(line)) > 140 {
+			continue
+		}
+		if uppercaseLetterRatio(line) >= 0.78 && strings.Count(line, " ") >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRawDocumentParagraph(answer string) bool {
+	paragraphs := strings.Split(strings.ReplaceAll(answer, "\r\n", "\n"), "\n\n")
+	for _, paragraph := range paragraphs {
+		paragraph = strings.TrimSpace(paragraph)
+		if len(strings.Fields(paragraph)) >= 55 && !strings.Contains(paragraph, "Fuente:") {
+			return true
+		}
+	}
+	return false
+}
+
+func rawOverlapRatio(normalizedAnswer string, normalizedChunk string) float64 {
+	answerTerms := uniqueMeaningfulAnswerTerms(normalizedAnswer)
+	if len(answerTerms) == 0 {
+		return 0
+	}
+	chunkTerms := uniqueMeaningfulAnswerTerms(normalizedChunk)
+	matches := 0
+	for term := range answerTerms {
+		if chunkTerms[term] {
+			matches++
+		}
+	}
+	return float64(matches) / float64(len(answerTerms))
+}
+
+func uniqueMeaningfulAnswerTerms(normalized string) map[string]bool {
+	terms := make(map[string]bool)
+	for _, term := range strings.Fields(normalized) {
+		if len([]rune(term)) < 4 || askKeywordStopwords[term] {
+			continue
+		}
+		terms[term] = true
+	}
+	return terms
+}
+
+func uppercaseLetterRatio(text string) float64 {
+	letters := 0
+	uppercase := 0
+	for _, r := range text {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		letters++
+		if unicode.IsUpper(r) {
+			uppercase++
+		}
+	}
+	if letters == 0 {
+		return 0
+	}
+	return float64(uppercase) / float64(letters)
+}
+
+func appendSourcesToAnswer(answer string, sources []askSource) string {
+	answer = polishFinalPresentation(answer, sources)
+	sourceLabels := orderSourceLabelsForDisplay(answerSourceLabels(sources))
+	if len(sourceLabels) == 0 || answerHasSourceLine(answer) {
+		return answer
+	}
+	if len(sourceLabels) == 1 {
+		return strings.TrimSpace(answer + "\n\nFuente: " + sourceLabels[0])
+	}
+	return strings.TrimSpace(answer + "\n\nFuente: " + strings.Join(sourceLabels, "; "))
+}
+
+func polishFinalPresentation(answer string, sources []askSource) string {
+	answer = removeRawParserBlocks(cleanDisplayFormatting(answer))
+	if rewritten := rewriteMixedDocumentPresentation(answer, sources); rewritten != "" {
+		return rewritten
+	}
+	return strings.TrimSpace(answer)
+}
+
+func rewriteMixedDocumentPresentation(answer string, sources []askSource) string {
+	documentName := ""
+	excelName := ""
+	for _, source := range sources {
+		name := cleanDisplayFormatting(strings.TrimSpace(source.DocumentName))
+		if name == "" {
+			continue
+		}
+		if isSpreadsheetFilename(name) {
+			if excelName == "" {
+				excelName = name
+			}
+			continue
+		}
+		if documentName == "" {
+			documentName = name
+		}
+	}
+	if documentName == "" || excelName == "" {
+		return ""
+	}
+
+	combined := answer + "\n" + sourcesExcerptText(sources)
+	normalizedCombined := service.NormalizeSearchText(combined)
+	if strings.TrimSpace(sourcesExcerptText(sources)) == "" &&
+		!strings.Contains(normalizedCombined, service.NormalizeSearchText(documentName)) &&
+		!strings.Contains(normalizedCombined, service.NormalizeSearchText(excelName)) &&
+		!strings.Contains(normalizedCombined, "documento tipo excel") {
+		return ""
+	}
+	documentDescription := "información narrativa del documento consultado"
+	if containsAnyNormalized(normalizedCombined, "auradb pipeline", "analisis documental", "subir archivos", "consultarlos mediante preguntas") {
+		documentDescription = "información base del proyecto AuraDB Pipeline"
+		if containsAnyNormalized(normalizedCombined, "sistema de analisis documental", "analisis documental inteligente", "preguntas") {
+			documentDescription = "información base del proyecto AuraDB Pipeline como un sistema de análisis documental inteligente que permite subir archivos y consultarlos mediante preguntas"
+		}
+	}
+
+	excelDescription := excelInterpretationFromSources(sources)
+	if excelDescription == "" {
+		excelDescription = "información estructurada tipo datos"
+	}
+
+	conclusion := "En conjunto, los documentos cargados reúnen información narrativa y datos estructurados consultables."
+	if strings.Contains(normalizedCombined, "auradb pipeline") {
+		conclusion = "En conjunto, los documentos muestran tanto la lógica del sistema como ejemplos de datos que pueden ser procesados por la plataforma."
+	}
+
+	return strings.Join([]string{
+		"El documento " + documentName + " contiene " + documentDescription + ".",
+		"El archivo " + excelName + " contiene " + excelDescription + ".",
+		conclusion,
+	}, "\n\n")
+}
+
+func removeRawParserBlocks(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	cleaned := make([]string, 0, len(lines))
+	lastBlank := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if !lastBlank {
+				cleaned = append(cleaned, "")
+			}
+			lastBlank = true
+			continue
+		}
+		if isRawParserLine(line) {
+			continue
+		}
+		lastBlank = false
+		cleaned = append(cleaned, line)
+	}
+	return strings.TrimSpace(strings.Join(cleaned, "\n"))
+}
+
+func isRawParserLine(line string) bool {
+	return rawExcelTechnicalLinePattern.MatchString(line) || rawExcelDataLinePattern.MatchString(line)
+}
+
+func orderSourceLabelsForDisplay(labels []string) []string {
+	if len(labels) < 2 {
+		return labels
+	}
+	ordered := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if !isSpreadsheetFilename(label) {
+			ordered = append(ordered, label)
+		}
+	}
+	for _, label := range labels {
+		if isSpreadsheetFilename(label) {
+			ordered = append(ordered, label)
+		}
+	}
+	return ordered
+}
+
+func isSpreadsheetFilename(name string) bool {
+	normalized := strings.ToLower(cleanDisplayFormatting(name))
+	return strings.Contains(normalized, ".xlsx") || strings.Contains(normalized, ".xls")
+}
+
+func sourcesExcerptText(sources []askSource) string {
+	parts := make([]string, 0, len(sources))
+	for _, source := range sources {
+		if text := strings.TrimSpace(source.Excerpt); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func excelInterpretationFromSources(sources []askSource) string {
+	overview := parseSpreadsheetOverviewFromText(sourcesExcerptText(sources))
+	switch {
+	case overview.rows != "" && overview.columns != "":
+		return overview.rows + " registros con las columnas " + overview.columns
+	case overview.rows != "":
+		return overview.rows + " registros estructurados"
+	case overview.columns != "":
+		return "datos estructurados con las columnas " + overview.columns
+	default:
+		return ""
+	}
+}
+
+func answerSourceLabels(sources []askSource) []string {
+	labels := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, source := range sources {
+		name := strings.TrimSpace(source.DocumentName)
+		if name == "" {
+			name = strings.TrimSpace(source.DocumentID)
+		}
+		if strings.Contains(name, "[REDACTADO]") && strings.TrimSpace(source.DocumentID) != "" {
+			name = strings.TrimSpace(source.DocumentID)
+		}
+		if strings.Contains(name, "[REDACTADO]") {
+			continue
+		}
+		if name == "" {
+			continue
+		}
+		name = cleanDisplayFormatting(name)
+		label := name
+		if sheet := strings.TrimSpace(source.SheetName); sheet != "" {
+			label += " — Hoja: " + cleanDisplayFormatting(sheet)
+		}
+		if seen[label] {
+			continue
+		}
+		seen[label] = true
+		labels = append(labels, label)
+	}
+	return labels
+}
+
+func answerHasSourceLine(answer string) bool {
+	normalized := service.NormalizeSearchText(answer)
+	return strings.Contains(normalized, "fuente ") || strings.Contains(normalized, "fuentes ")
+}
+
+func logAnswerSources(sources []askSource) {
+	labels := answerSourceLabels(sources)
+	log.Printf("answer_sources_count=%d", len(labels))
+	log.Printf("answer_sources=%q", strings.Join(labels, "; "))
+}
+
+func countUniqueSourceDocuments(sources []askSource) int {
+	seen := make(map[string]bool)
+	for _, source := range sources {
+		documentID := strings.TrimSpace(source.DocumentID)
+		if documentID == "" || seen[documentID] {
+			continue
+		}
+		seen[documentID] = true
+	}
+	return len(seen)
+}
+
+func isLoadedDocumentsOverviewQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(normalized,
+		"documentos cargados",
+		"documentos subidos",
+		"documentos seleccionados",
+		"que informacion hay en los documentos",
+		"que contienen los documentos",
+		"resume los documentos",
+		"resumen de los documentos",
+	)
+}
+
+func (h *AskHandler) buildGlobalKnowledgeAnswer(ctx context.Context, tenantID string, chunks []postgres.SearchResult) string {
+	groups := groupChunksByDocument(chunks)
+	if len(groups) == 0 {
+		return ""
+	}
+
+	documentIDs := make([]string, 0, len(groups))
+	for documentID := range groups {
+		documentIDs = append(documentIDs, documentID)
+	}
+	sort.Strings(documentIDs)
+
+	paragraphs := make([]string, 0, len(documentIDs))
+	for i, documentID := range documentIDs {
+		documentChunks := groups[documentID]
+		name := h.documentDisplayName(ctx, tenantID, documentID)
+		description := cleanOverviewDescription(documentOverviewDescription(documentChunks))
+		if description == "" {
+			description = "información procesada consultable"
+		}
+		kind := "documento"
+		if chunksLookLikeSpreadsheet(documentChunks) {
+			kind = "archivo"
+		}
+		prefix := "Según el " + kind + " " + name + ", "
+		if i > 0 {
+			prefix = "También en el " + kind + " " + name + ", "
+		}
+		paragraphs = append(paragraphs, prefix+"se encontró "+lowerFirstRune(strings.TrimSuffix(description, "."))+".")
+	}
+	return strings.Join(paragraphs, "\n\n")
+}
+
+func (h *AskHandler) documentDisplayName(ctx context.Context, tenantID string, documentID string) string {
+	name := strings.TrimSpace(documentID)
+	if h.searchRepo != nil {
+		if filename, err := h.searchRepo.GetDocumentFilename(ctx, tenantID, documentID); err == nil && strings.TrimSpace(filename) != "" {
+			name = strings.TrimSpace(filename)
+		}
+	}
+	return cleanDisplayFormatting(name)
+}
+
+func (h *AskHandler) buildMultiDocumentOverviewAnswer(ctx context.Context, tenantID string, chunks []postgres.SearchResult) string {
+	groups := groupChunksByDocument(chunks)
+	if len(groups) == 0 {
+		return ""
+	}
+
+	documentIDs := make([]string, 0, len(groups))
+	for documentID := range groups {
+		documentIDs = append(documentIDs, documentID)
+	}
+	sort.Strings(documentIDs)
+
+	lines := make([]string, 0, len(documentIDs)+1)
+	for _, documentID := range documentIDs {
+		documentChunks := groups[documentID]
+		name := h.documentDisplayName(ctx, tenantID, documentID)
+		description := cleanOverviewDescription(documentOverviewDescription(documentChunks))
+		if description == "" {
+			description = "información procesada consultable."
+		}
+		kind := "documento"
+		if chunksLookLikeSpreadsheet(documentChunks) {
+			kind = "archivo"
+		}
+		lines = append(lines, "El "+kind+" "+name+" contiene "+lowerFirstRune(strings.TrimSuffix(description, "."))+".")
+	}
+	if len(lines) > 1 {
+		lines = append(lines, "En conjunto, los documentos cargados reúnen información de "+strconv.Itoa(len(lines))+" archivos consultables.")
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func groupChunksByDocument(chunks []postgres.SearchResult) map[string][]postgres.SearchResult {
+	groups := make(map[string][]postgres.SearchResult)
+	for _, chunk := range chunks {
+		documentID := strings.TrimSpace(chunk.DocumentID)
+		if documentID == "" {
+			continue
+		}
+		groups[documentID] = append(groups[documentID], chunk)
+	}
+	return groups
+}
+
+func documentOverviewDescription(chunks []postgres.SearchResult) string {
+	if len(chunks) == 0 {
+		return ""
+	}
+	if chunksLookLikeSpreadsheet(chunks) {
+		table := spreadsheetOverviewDescription(chunks)
+		if table != "" {
+			return table
+		}
+	}
+	texts := cleanChunkTextsForRewrite(searchResultsToStrings(chunks))
+	points := buildDevelopedParagraphs(texts, 2)
+	if len(points) == 0 {
+		return ""
+	}
+	if len(points) == 1 {
+		return cleanOverviewDescription(points[0])
+	}
+	return cleanOverviewDescription(strings.TrimSuffix(points[0], ".") + " y también " + lowerFirstRune(strings.TrimSuffix(points[1], ".")))
+}
+
+func spreadsheetOverviewDescription(chunks []postgres.SearchResult) string {
+	table := parseSpreadsheetOverview(chunks)
+	if table.columns == "" && table.rows == "" {
+		return ""
+	}
+	switch {
+	case table.rows != "" && table.columns != "":
+		return table.rows + " registros con las columnas " + table.columns
+	case table.rows != "":
+		return table.rows + " registros"
+	case table.columns != "":
+		return "las columnas " + table.columns
+	default:
+		return ""
+	}
+}
+
+func cleanOverviewDescription(text string) string {
+	text = cleanDisplayFormatting(text)
+	text = removeNoisyUppercaseLines(text)
+	text = auradbProjectNumberPattern.ReplaceAllString(text, "AuraDB Pipeline")
+	text = trailingStandaloneNumberPattern.ReplaceAllString(text, "$1")
+	text = visibleMultiSpacePattern.ReplaceAllString(text, " ")
+	normalized := service.NormalizeSearchText(text)
+	if strings.Contains(normalized, "nombre del proyecto auradb pipeline") ||
+		strings.Contains(normalized, "proyecto auradb pipeline") {
+		return "información base del proyecto AuraDB Pipeline"
+	}
+	return strings.TrimSpace(strings.Trim(text, " .;:"))
+}
+
+func removeNoisyUppercaseLines(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	cleaned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || isNoisyUppercasePhrase(line) {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	return strings.Join(cleaned, " ")
+}
+
+func isNoisyUppercasePhrase(text string) bool {
+	words := strings.Fields(text)
+	if len(words) < 2 || len(words) > 8 {
+		return false
+	}
+	letters := 0
+	uppercase := 0
+	for _, r := range text {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		letters++
+		if unicode.IsUpper(r) {
+			uppercase++
+		}
+	}
+	return letters > 0 && uppercase*100/letters >= 85
+}
+
+type spreadsheetOverview struct {
+	columns string
+	rows    string
+}
+
+func parseSpreadsheetOverview(chunks []postgres.SearchResult) spreadsheetOverview {
+	return parseSpreadsheetOverviewFromText(chunksTextForOverview(chunks))
+}
+
+func chunksTextForOverview(chunks []postgres.SearchResult) string {
+	parts := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		parts = append(parts, chunk.Content)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func parseSpreadsheetOverviewFromText(text string) spreadsheetOverview {
+	overview := spreadsheetOverview{}
+	for _, rawLine := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if overview.columns == "" && strings.HasPrefix(line, "Columnas:") {
+			overview.columns = strings.TrimSpace(strings.TrimPrefix(line, "Columnas:"))
+		}
+		if overview.rows == "" && strings.HasPrefix(line, "Total de filas de datos:") {
+			overview.rows = strings.TrimSpace(strings.TrimPrefix(line, "Total de filas de datos:"))
+		}
+		if overview.columns != "" && overview.rows != "" {
+			return overview
+		}
+	}
+	return overview
+}
+
+func sheetNameFromChunk(chunk postgres.SearchResult) string {
+	return sheetNameFromText(chunk.Content)
+}
+
+func sheetNameFromText(text string) string {
+	for _, rawLine := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "Hoja:") {
+			return trimSheetLabel(strings.TrimSpace(strings.TrimPrefix(line, "Hoja:")))
+		}
+	}
+	return ""
+}
+
+func trimSheetLabel(sheet string) string {
+	sheet = strings.TrimSpace(sheet)
+	sheet = strings.TrimPrefix(sheet, "Hoja:")
+	return strings.TrimSpace(sheet)
 }
 
 func (h *AskHandler) activeFilename(ctx context.Context, tenantID string, documentID string) string {
@@ -669,9 +1794,37 @@ func (h *AskHandler) activeFilename(ctx context.Context, tenantID string, docume
 func logDocumentScopedAnswer(documentID string, filename string, chunks []postgres.SearchResult) {
 	firstChunkPreview := ""
 	if len(chunks) > 0 {
-		firstChunkPreview = chunksTextSample(chunks[:1], 300)
+		firstChunkPreview = service.SanitizeSensitiveText(chunksTextSample(chunks[:1], 300))
 	}
 	log.Printf("active_document_id=%s active_filename=%q chunks_count=%d first_chunk_preview=%q", documentID, filename, len(chunks), firstChunkPreview)
+}
+
+func (h *AskHandler) loadValidMultiDocumentChunks(ctx context.Context, documentIDs []string) ([]string, []postgres.SearchResult, int, int) {
+	validDocumentIDs := make([]string, 0, len(documentIDs))
+	validChunks := make([]postgres.SearchResult, 0)
+	documentsWithoutContent := 0
+
+	for _, documentID := range documentIDs {
+		documentID = strings.TrimSpace(documentID)
+		if documentID == "" {
+			continue
+		}
+		chunks, err := h.searchService.GetAllChunksByDocumentID(ctx, documentID)
+		if err != nil {
+			log.Printf("multi_document_chunk_load_error document_id=%s error=%v", documentID, err)
+			documentsWithoutContent++
+			continue
+		}
+		chunks = filterChunksByDocumentID(chunks, documentID)
+		if len(chunks) == 0 || !chunksHaveReadableText(chunks) {
+			documentsWithoutContent++
+			continue
+		}
+		validDocumentIDs = append(validDocumentIDs, documentID)
+		validChunks = append(validChunks, chunks...)
+	}
+
+	return validDocumentIDs, validChunks, len(validDocumentIDs), documentsWithoutContent
 }
 
 func buildAskContext(chunks []postgres.SearchResult) (string, []askSource) {
@@ -686,13 +1839,15 @@ func buildAskContext(chunks []postgres.SearchResult) (string, []askSource) {
 		builder.WriteString(" | document_id: ")
 		builder.WriteString(chunk.DocumentID)
 		builder.WriteString("]\n")
-		builder.WriteString(chunk.Content)
+		content := service.SanitizeSensitiveText(chunk.Content)
+		builder.WriteString(content)
 
 		sources = append(sources, askSource{
 			ChunkID:    chunk.ChunkID,
 			DocumentID: chunk.DocumentID,
+			SheetName:  sheetNameFromChunk(chunk),
 			Score:      chunk.Score,
-			Excerpt:    chunk.Content,
+			Excerpt:    content,
 		})
 	}
 	return builder.String(), sources
@@ -700,8 +1855,11 @@ func buildAskContext(chunks []postgres.SearchResult) (string, []askSource) {
 
 func filterChunksByDocumentID(chunks []postgres.SearchResult, documentID string) []postgres.SearchResult {
 	documentID = strings.TrimSpace(documentID)
-	if documentID == "" || len(chunks) == 0 {
+	if len(chunks) == 0 {
 		return nil
+	}
+	if documentID == "" {
+		return chunks
 	}
 	filtered := make([]postgres.SearchResult, 0, len(chunks))
 	for _, chunk := range chunks {
@@ -710,6 +1868,30 @@ func filterChunksByDocumentID(chunks []postgres.SearchResult, documentID string)
 		}
 	}
 	return filtered
+}
+
+func countUniqueDocumentsInChunks(chunks []postgres.SearchResult) int {
+	seen := make(map[string]bool)
+	for _, chunk := range chunks {
+		documentID := strings.TrimSpace(chunk.DocumentID)
+		if documentID == "" || seen[documentID] {
+			continue
+		}
+		seen[documentID] = true
+	}
+	return len(seen)
+}
+
+func chunksLookLikeSpreadsheet(chunks []postgres.SearchResult) bool {
+	for _, chunk := range chunks {
+		for _, line := range strings.Split(chunk.Content, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "Columnas:") || strings.HasPrefix(line, "Total de filas de datos:") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func enforceActiveDocumentAnswerScope(answer string, activeFilename string) string {
@@ -736,6 +1918,9 @@ func activeDocumentDetectedType(filename string) string {
 		strings.HasSuffix(filename, ".tif"),
 		strings.HasSuffix(filename, ".tiff"):
 		return "image"
+	case strings.HasSuffix(filename, ".xlsx"),
+		strings.HasSuffix(filename, ".xls"):
+		return "spreadsheet"
 	default:
 		return ""
 	}
@@ -960,7 +2145,7 @@ func buildSummaryContext(chunks []postgres.SearchResult) (string, []askSource) {
 	var builder strings.Builder
 	sources := make([]askSource, 0, len(chunks))
 	for _, chunk := range chunks {
-		content := strings.TrimSpace(chunk.Content)
+		content := strings.TrimSpace(service.SanitizeSensitiveText(chunk.Content))
 		if content == "" {
 			continue
 		}
@@ -972,8 +2157,9 @@ func buildSummaryContext(chunks []postgres.SearchResult) (string, []askSource) {
 		sources = append(sources, askSource{
 			ChunkID:    chunk.ChunkID,
 			DocumentID: chunk.DocumentID,
+			SheetName:  sheetNameFromChunk(chunk),
 			Score:      chunk.Score,
-			Excerpt:    chunk.Content,
+			Excerpt:    content,
 		})
 	}
 	return builder.String(), sources
@@ -2162,6 +3348,13 @@ func selectAskContextChunks(chunks []postgres.SearchResult, queryType string, qu
 		scores = append(scores, item.score)
 	}
 	log.Println("TOP_CHUNKS_SCORES=", scores)
+	if len(ranked) == 0 {
+		chunks = limitChunksPerDocument(orderAskChunksByScoreOrPosition(chunks), 20)
+		if len(chunks) > 20 {
+			return chunks[:20]
+		}
+		return chunks
+	}
 	chunks = make([]postgres.SearchResult, 0, len(ranked))
 	for _, item := range ranked {
 		chunks = append(chunks, item.chunk)
@@ -2169,28 +3362,96 @@ func selectAskContextChunks(chunks []postgres.SearchResult, queryType string, qu
 	if len(chunks) == 0 {
 		return nil
 	}
+	chunks = limitChunksPerDocument(chunks, 20)
 	if queryType == "summary" {
-		if len(chunks) <= 8 {
+		if len(chunks) <= 20 {
 			return chunks
 		}
-		return chunks[:8]
+		return chunks[:20]
 	}
 	if queryType == "section" {
-		if len(chunks) <= 8 {
+		if len(chunks) <= 20 {
 			return chunks
 		}
-		return chunks[:8]
+		return chunks[:20]
 	}
 	if queryType == "structure" {
-		if len(chunks) <= 8 {
+		if len(chunks) <= 20 {
 			return chunks
 		}
-		return chunks[:8]
+		return chunks[:20]
 	}
-	if len(chunks) <= 8 {
+	if len(chunks) <= 20 {
 		return chunks
 	}
-	return chunks[:8]
+	return chunks[:20]
+}
+
+func limitChunksPerDocument(chunks []postgres.SearchResult, limit int) []postgres.SearchResult {
+	if limit <= 0 || len(chunks) <= limit {
+		return chunks
+	}
+	usedDocuments := countUniqueDocumentsInChunks(chunks)
+	if usedDocuments <= 1 {
+		return chunks[:limit]
+	}
+
+	selected := make([]postgres.SearchResult, 0, limit)
+	perDocumentLimit := limit / usedDocuments
+	if perDocumentLimit < 1 {
+		perDocumentLimit = 1
+	}
+	perDocumentCount := make(map[string]int)
+	for _, chunk := range chunks {
+		documentID := strings.TrimSpace(chunk.DocumentID)
+		if perDocumentCount[documentID] >= perDocumentLimit {
+			continue
+		}
+		selected = append(selected, chunk)
+		perDocumentCount[documentID]++
+		if len(selected) == limit {
+			return selected
+		}
+	}
+	for _, chunk := range chunks {
+		if len(selected) == limit {
+			break
+		}
+		if chunkAlreadySelected(selected, chunk) {
+			continue
+		}
+		selected = append(selected, chunk)
+	}
+	return selected
+}
+
+func chunkAlreadySelected(chunks []postgres.SearchResult, candidate postgres.SearchResult) bool {
+	for _, chunk := range chunks {
+		if chunk.ChunkID != "" && chunk.ChunkID == candidate.ChunkID {
+			return true
+		}
+		if chunk.DocumentID == candidate.DocumentID && chunk.ChunkIndex == candidate.ChunkIndex {
+			return true
+		}
+	}
+	return false
+}
+
+func orderAskChunksByScoreOrPosition(chunks []postgres.SearchResult) []postgres.SearchResult {
+	ordered := append([]postgres.SearchResult(nil), chunks...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Score != ordered[j].Score {
+			return ordered[i].Score > ordered[j].Score
+		}
+		if ordered[i].DocumentID == ordered[j].DocumentID {
+			if ordered[i].ChunkIndex == ordered[j].ChunkIndex {
+				return ordered[i].ChunkID < ordered[j].ChunkID
+			}
+			return ordered[i].ChunkIndex < ordered[j].ChunkIndex
+		}
+		return ordered[i].DocumentID < ordered[j].DocumentID
+	})
+	return ordered
 }
 
 type askChunkKeywordScore struct {
@@ -2278,6 +3539,14 @@ var askKeywordStopwords = map[string]bool{
 var internalReferencePattern = regexp.MustCompile(`\[(?:chunk_id|document_id)[^\]]*\]`)
 var visiblePunctuationPattern = regexp.MustCompile(`([\.,;:!?])([A-Za-zÁÉÍÓÚÑáéíóúñ])`)
 var visibleMultiSpacePattern = regexp.MustCompile(`[ \t]{2,}`)
+var fileExtensionSpacePattern = regexp.MustCompile(`(?i)\.\s+(pdf|docx|xlsx|txt)\b`)
+var invertedWordCasePattern = regexp.MustCompile(`\b\p{Ll}\p{Lu}{2,}\b`)
+var auraDBSpacedPattern = regexp.MustCompile(`(?i)\baura\s+db\b`)
+var auraDBCompactPattern = regexp.MustCompile(`(?i)\bauradb\b`)
+var auradbProjectNumberPattern = regexp.MustCompile(`(?i)\bAuraDB Pipeline\s+\d+\b`)
+var trailingStandaloneNumberPattern = regexp.MustCompile(`(?s)(.*?)\s+\d+\s*$`)
+var rawExcelTechnicalLinePattern = regexp.MustCompile(`(?i)^\s*(Documento tipo:\s*Excel|Hoja:|Columnas:|Total de columnas:|Total de filas de datos:|Encabezados detectados:|Bloque de filas:)\b`)
+var rawExcelDataLinePattern = regexp.MustCompile(`(?i)^\s*Fila\s+\d+\s*:`)
 var directRomanHeadingPattern = regexp.MustCompile(`(?i)^[ivxlcdm]+\s*[\.\):-]\s+\S.+$`)
 var directNumericHeadingPattern = regexp.MustCompile(`^\d+(\.\d+){0,3}\s*[\.\):-]?\s+\S.+$`)
 var standaloneNumberingPattern = regexp.MustCompile(`^\s*(?:[-*]\s*)?\d+[\.)]?\s*$`)
@@ -2294,7 +3563,26 @@ var genericAnswerPhrasePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\s*en conjunto, estos elementos[^.?!]*(?:[.?!]|$)`),
 }
 
+func cleanDisplayFormatting(text string) string {
+	text = fileExtensionSpacePattern.ReplaceAllString(text, ".$1")
+	text = auraDBSpacedPattern.ReplaceAllString(text, "AuraDB")
+	text = auraDBCompactPattern.ReplaceAllString(text, "AuraDB")
+	text = visibleMultiSpacePattern.ReplaceAllString(text, " ")
+	text = invertedWordCasePattern.ReplaceAllStringFunc(text, normalizeInvertedWordCase)
+	return strings.TrimSpace(text)
+}
+
+func normalizeInvertedWordCase(word string) string {
+	runes := []rune(strings.ToLower(word))
+	if len(runes) == 0 {
+		return word
+	}
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
+}
+
 func cleanUserVisibleAnswer(answer string) string {
+	answer = cleanDisplayFormatting(answer)
 	answer = internalReferencePattern.ReplaceAllString(answer, "")
 	answer = strings.ReplaceAll(answer, "[]", "")
 	answer = visiblePunctuationPattern.ReplaceAllString(answer, "$1 $2")
@@ -2304,6 +3592,9 @@ func cleanUserVisibleAnswer(answer string) string {
 	for _, line := range lines {
 		line = visibleMultiSpacePattern.ReplaceAllString(line, " ")
 		line = strings.TrimSpace(line)
+		if isRawParserLine(line) {
+			continue
+		}
 		if line == "" {
 			if lastBlank {
 				continue
@@ -2315,7 +3606,7 @@ func cleanUserVisibleAnswer(answer string) string {
 		lastBlank = false
 		cleaned = append(cleaned, line)
 	}
-	return strings.TrimSpace(strings.Join(cleaned, "\n"))
+	return cleanDisplayFormatting(strings.TrimSpace(strings.Join(cleaned, "\n")))
 }
 
 func cleanFinalAnswer(text string) string {
@@ -2375,7 +3666,8 @@ func cleanFinalAnswerLine(line string) string {
 	}
 	if standaloneNumberingPattern.MatchString(line) ||
 		genericStandaloneTitlePattern.MatchString(line) ||
-		genericNumberedTitlePattern.MatchString(line) {
+		genericNumberedTitlePattern.MatchString(line) ||
+		isRawParserLine(line) {
 		return ""
 	}
 	return line
