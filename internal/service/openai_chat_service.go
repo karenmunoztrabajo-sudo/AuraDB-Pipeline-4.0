@@ -245,7 +245,7 @@ func ModelTokensLimitForDetailedExplanation() int {
 	return detailedExplanationTokenLimit
 }
 
-const detailedExplanationSystemPrompt = "Explica directamente el tema del documento con lenguaje natural. Habla del contenido real del texto, sin mencionar el funcionamiento interno del sistema y sin usar una plantilla genérica."
+const detailedExplanationSystemPrompt = "Explica directamente el tema del documento con lenguaje natural, profesional y centrado en el contenido real. No menciones procesos internos, el sistema, el modelo ni una respuesta generada. Evita plantillas genéricas: la explicación debe desarrollar el tema concreto sin repetir innecesariamente la frase \"el documento\"."
 
 const detailedExplanationUserRules = `Reglas obligatorias:
 - Usa solo el texto del documento.
@@ -254,23 +254,58 @@ const detailedExplanationUserRules = `Reglas obligatorias:
 - No copies texto literal del documento; parafrasea y explica con tus propias palabras.
 - No inventes información ni agregues conocimiento externo.
 - No incluyas referencias internas, chunk_id, document_id ni etiquetas técnicas.
-- No menciones funcionamiento interno del sistema.
-- No uses las palabras chunks, recuperado, recuperación, contenido procesado ni temas recuperados.
-- No uses frases de plantilla como "respuesta organiza", "consulta planteada", "material suficiente", "punto de partida", "eje se centra" o "eje desarrolla".
+- No menciones funcionamiento interno, sistema, modelo ni respuesta generada.
+- No uses las palabras o expresiones chunks, chunks recuperados, contenido procesado, material suficiente, consulta planteada, ejes recuperados, temas recuperados, recuperado ni recuperación.
+- No uses frases de plantilla como "respuesta organiza", "primer eje", "el primer eje", "punto de partida", "eje se centra" o "eje desarrolla".
+- Usa lenguaje natural y profesional, como una explicación empresarial lista para el usuario final.
+- Explica directamente el tema, los datos o el procedimiento del documento; no hables sobre cómo se obtuvo la respuesta.
+- Usa tildes correctas en español.
+- Evita repetir "el documento"; alterna con "el texto", "el material", "la explicación", "la fuente" o una referencia directa al tema.
+- Usa conectores naturales cuando aporten fluidez: "Inicialmente", "Posteriormente", "Además" y "Por otra parte".
 - Si el texto es parcial, explica ampliamente solo lo que esté respaldado.
 
-Formato deseado:
-El documento explica el tema central con una frase directa.
+Formato para documentos narrativos:
+Introducción
+Explica en uno o dos párrafos el tema central del documento.
 
-Primero, aborda...
+Desarrollo
+Organiza los temas reales del documento en párrafos amplios y conectados.
 
-Después, describe...
+Conclusión
+Cierra con la idea principal que deja el documento.
 
-Luego, explica...
+Fuente
+Indica la fuente al final si está disponible.
 
-Finalmente, desarrolla...
+Formato para documentos técnicos:
+Introducción
+Explica para qué sirve el documento o procedimiento.
 
-En conclusión,...`
+Desarrollo
+Describe herramientas, endpoints, comandos, datos, módulos o elementos técnicos mencionados.
+Explica el orden lógico de ejecución o uso descrito.
+Menciona riesgos, credenciales, tokens o datos sensibles solo si aparecen; si fueron redactados, dilo sin revelar valores.
+
+Conclusión
+Cierra con la utilidad principal del procedimiento.
+
+Fuente
+Indica la fuente al final si está disponible.
+
+Formato para Excel:
+Introducción
+Presenta qué tipo de datos contiene el archivo.
+
+Desarrollo
+Enumera las columnas identificadas.
+Indica cuántos registros contiene la hoja o archivo cuando el dato exista.
+Explica patrones, valores destacados o lectura general de los datos usando solo el contenido disponible.
+
+Conclusión
+Cierra con la lectura principal de la tabla.
+
+Fuente
+Indica la fuente al final si está disponible.`
 
 func extractOpenAIText(resp openAIResponse) string {
 	if strings.TrimSpace(resp.OutputText) != "" {

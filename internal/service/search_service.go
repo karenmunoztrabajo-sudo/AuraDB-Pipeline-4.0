@@ -36,6 +36,12 @@ type queryIntent struct {
 	EntityExtractionMode string
 }
 
+type topicFocusIntent struct {
+	Enabled  bool
+	MainTerm string
+	Variants []string
+}
+
 type embeddingGenerator interface {
 	GenerateEmbedding(ctx context.Context, input string) ([]float64, error)
 }
@@ -79,6 +85,7 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 	sectionQueryDetected := queryType == "section"
 	sectionTerm := SectionTermForQuery(query)
 	queryIntent := detectQueryIntent(query)
+	topicFocus := detectTopicFocus(query)
 	entityFilterApplied := shouldApplyEntityFilter(queryIntent.MainEntity)
 	precisionMode := isPrecisionQuery(query) && queryType != "summary"
 	selectedDocumentIDs := normalizeDocumentIDs(documentIDs)
@@ -99,7 +106,7 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 	if precisionMode && topK > defaultSearchTopK {
 		topK = defaultSearchTopK
 	}
-	log.Printf("search_request query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q topK=%d document_id=%s selected_document_ids=%q multi_document_mode=%t modo_precision=%t main_terms_detected=%q main_entity_detected=%q entity_filter_applied=%t entity_extraction_mode=%q reason_entity_rejected=%q section_query_detected=%t section_term=%q", query, query, normalizedQuery, queryType, topK, firstDocumentID(selectedDocumentIDs), documentIDLog, multiDocumentMode, precisionMode, strings.Join(queryIntent.MainTerms, ","), queryIntent.MainEntity, entityFilterApplied, queryIntent.EntityExtractionMode, queryIntent.EntityRejectedReason, sectionQueryDetected, sectionTerm)
+	log.Printf("search_request query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q topK=%d document_id=%s selected_document_ids=%q multi_document_mode=%t modo_precision=%t main_terms_detected=%q main_entity_detected=%q entity_filter_applied=%t entity_extraction_mode=%q reason_entity_rejected=%q section_query_detected=%t section_term=%q topic_focused_retrieval=%t main_topic_term=%q", query, query, normalizedQuery, queryType, topK, firstDocumentID(selectedDocumentIDs), documentIDLog, multiDocumentMode, precisionMode, strings.Join(queryIntent.MainTerms, ","), queryIntent.MainEntity, entityFilterApplied, queryIntent.EntityExtractionMode, queryIntent.EntityRejectedReason, sectionQueryDetected, sectionTerm, topicFocus.Enabled, topicFocus.MainTerm)
 
 	if queryType == "summary" {
 		return s.searchSummaryDirect(ctx, tenantID, query, topK, selectedDocumentIDs)
@@ -120,8 +127,11 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 			return results, nil
 		}
 
-		textResults, textMatchesFound := searchDirectTextMatches(query, topK, directChunks)
+		textResults, textMatchesFound, boostedChunks := searchDirectTextMatches(query, topK, directChunks)
 		if len(textResults) > 0 {
+			if topicFocus.Enabled {
+				log.Printf("topic_focused_retrieval=true main_topic_term=%q boosted_chunks=%d", topicFocus.MainTerm, boostedChunks)
+			}
 			log.Printf("search_document_id=%s direct_chunks_found=%d text_matches_found=%d returned_chunks=%d", firstDocumentID(selectedDocumentIDs), len(directChunks), textMatchesFound, len(textResults))
 			log.Printf("search_mode=text text_matches_found=%d returned_chunks=%d document_id=%s query_type=%s", textMatchesFound, len(textResults), firstDocumentID(selectedDocumentIDs), queryType)
 			return textResults, nil
@@ -181,6 +191,7 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 
 	vectorWeight, textWeight, textBoosted := rankingWeights(query)
 	scored := make([]postgres.SearchResult, 0, len(items))
+	boostedChunks := 0
 	for i := range items {
 		textScore := keywordScore(query, items[i].Content)
 		if precisionMode && !hasStrongQueryMatch(query, items[i].Content) {
@@ -194,12 +205,20 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 		finalScore := (vectorScore * vectorWeight) + (textScore * textWeight)
 		finalScore += exactEntityBoost(queryIntent, items[i].Content)
 		finalScore += specificQuestionBoost(queryIntent, query, items[i].Content)
+		if topicBoost := topicFocusedBoost(topicFocus, items[i].Content); topicBoost > 0 {
+			finalScore += topicBoost
+			boostedChunks++
+		}
 		if !textBoosted && textScore == 0 {
 			finalScore = vectorScore * 0.15
 		}
 		finalScore *= lengthPenalty(query, items[i].Content, textScore)
 		finalScore *= genericSectionPenalty(query, items[i].Content, precisionMode)
-		finalScore *= missingMainPhrasePenalty(queryIntent, items[i].Content)
+		if topicFocus.Enabled {
+			finalScore *= topicFocusedPenalty(topicFocus, items[i].Content)
+		} else {
+			finalScore *= missingMainPhrasePenalty(queryIntent, items[i].Content)
+		}
 		threshold := minFinalScore
 		if precisionMode {
 			threshold = minPrecisionScore
@@ -214,6 +233,9 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 	}
 
 	results := finalizeSearchResults(query, scored, topK)
+	if topicFocus.Enabled {
+		log.Printf("topic_focused_retrieval=true main_topic_term=%q boosted_chunks=%d", topicFocus.MainTerm, boostedChunks)
+	}
 	exactMatchFound := hasExactIntentMatch(queryIntent, results)
 	fallbackLastResortUsed := false
 	log.Printf("search_result mode=semantic query=%q normalized_query=%q query_type=%q document_id=%s selected_document_ids=%q multi_document_mode=%t modo_precision=%t candidate_chunks=%d final_chunks=%d main_terms_detected=%q main_entity_detected=%q entity_filter_applied=%t entity_extraction_mode=%q reason_entity_rejected=%q exact_entity_match_found=%t fallback_last_resort_used=%t section_query_detected=%t section_term=%q filtered_chunks_count=%d", query, normalizedQuery, queryType, firstDocumentID(selectedDocumentIDs), documentIDLog, multiDocumentMode, precisionMode, len(items), len(results), strings.Join(queryIntent.MainTerms, ","), queryIntent.MainEntity, entityFilterApplied, queryIntent.EntityExtractionMode, queryIntent.EntityRejectedReason, exactMatchFound, fallbackLastResortUsed, sectionQueryDetected, sectionTerm, len(results))
@@ -292,20 +314,21 @@ func (s *SearchService) directChunksByDocumentIDs(ctx context.Context, tenantID 
 	return s.repo.GetChunksByDocumentIDs(ctx, tenantID, documentIDs)
 }
 
-func searchDirectTextMatches(query string, topK int, chunks []postgres.SearchResult) ([]postgres.SearchResult, int) {
+func searchDirectTextMatches(query string, topK int, chunks []postgres.SearchResult) ([]postgres.SearchResult, int, int) {
 	topK = normalizeTopK(topK)
 	terms := textSearchTerms(query)
 	if len(terms) == 0 || len(chunks) == 0 {
-		return nil, 0
+		return nil, 0, 0
 	}
 
 	matches := filterTextMatches(query, terms, chunks)
-	matches = orderResultsByDocumentPosition(matches)
+	matches = prioritizeTopicMatches(query, matches)
 	matchesFound := len(matches)
+	boostedChunks := countTopicFocusedChunks(detectTopicFocus(query), matches)
 	if len(matches) > topK {
 		matches = matches[:topK]
 	}
-	return matches, matchesFound
+	return matches, matchesFound, boostedChunks
 }
 
 func firstDocumentChunks(chunks []postgres.SearchResult, limit int) []postgres.SearchResult {
@@ -396,10 +419,99 @@ func textSearchTerms(query string) []string {
 
 func isSearchIntentWord(term string) bool {
 	switch term {
-	case "busca", "buscar", "buscame", "encuentra", "encontrar", "dime", "sobre", "documento", "archivo", "texto", "informacion", "consulta", "pregunta", "quiero", "saber":
+	case "busca", "buscar", "buscame", "encuentra", "encontrar", "dime", "sobre", "documento", "archivo", "texto", "informacion", "consulta", "pregunta", "quiero", "saber", "podrias", "podria", "darme", "dame", "hablame", "explicame":
 		return true
 	default:
 		return false
+	}
+}
+
+func detectTopicFocus(query string) topicFocusIntent {
+	normalized := NormalizeSearchText(NormalizeQuestionForRetrieval(query))
+	if normalized == "" {
+		return topicFocusIntent{}
+	}
+
+	triggerPatterns := []string{
+		"sobre ",
+		"acerca de ",
+		"informacion sobre ",
+		"informacion de ",
+		"informacion acerca de ",
+		"hablame de ",
+		"explicame sobre ",
+		"detallame sobre ",
+	}
+	tail := ""
+	for _, pattern := range triggerPatterns {
+		if idx := strings.LastIndex(normalized, pattern); idx >= 0 {
+			tail = strings.TrimSpace(normalized[idx+len(pattern):])
+			break
+		}
+	}
+
+	terms := meaningfulTerms(normalized)
+	if tail != "" {
+		terms = meaningfulTerms(tail)
+	}
+	filtered := make([]string, 0, len(terms))
+	for _, term := range terms {
+		if isSearchIntentWord(term) || isTopicFocusStopWord(term) {
+			continue
+		}
+		filtered = append(filtered, term)
+	}
+	if len(filtered) == 0 {
+		return topicFocusIntent{}
+	}
+
+	mainTerm := filtered[len(filtered)-1]
+	if !isKnownTopicTerm(mainTerm) && tail == "" {
+		return topicFocusIntent{}
+	}
+	return topicFocusIntent{
+		Enabled:  true,
+		MainTerm: mainTerm,
+		Variants: topicTermVariants(mainTerm),
+	}
+}
+
+func isTopicFocusStopWord(term string) bool {
+	switch term {
+	case "este", "esta", "estos", "estas", "tema", "temas", "parte", "partes", "concepto", "conceptos", "contenido", "documentos", "podrias", "podria", "darme", "dame":
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownTopicTerm(term string) bool {
+	switch term {
+	case "arreglo", "arreglos", "array", "arrays", "lista", "listas", "variable", "variables", "funcion", "funciones":
+		return true
+	default:
+		return false
+	}
+}
+
+func topicTermVariants(term string) []string {
+	switch term {
+	case "arreglo", "arreglos", "array", "arrays":
+		return []string{"arreglo", "arreglos", "array", "arrays"}
+	case "lista", "listas":
+		return []string{"lista", "listas"}
+	case "variable", "variables":
+		return []string{"variable", "variables"}
+	case "funcion", "funciones":
+		return []string{"funcion", "funciones"}
+	default:
+		variants := []string{term}
+		if strings.HasSuffix(term, "s") && len([]rune(term)) > 4 {
+			variants = append(variants, strings.TrimSuffix(term, "s"))
+		} else {
+			variants = append(variants, term+"s")
+		}
+		return variants
 	}
 }
 
@@ -409,17 +521,69 @@ func filterTextMatches(query string, terms []string, items []postgres.SearchResu
 	}
 
 	matches := make([]postgres.SearchResult, 0, len(items))
+	topicFocus := detectTopicFocus(query)
+	topicMatchesFound := false
+	if topicFocus.Enabled {
+		for i := range items {
+			if topicFocusedTermCount(topicFocus, items[i].Content) > 0 {
+				topicMatchesFound = true
+				break
+			}
+		}
+	}
 	for i := range items {
 		normalizedContent := NormalizeSearchText(items[i].Content)
+		if topicMatchesFound && topicFocusedTermCount(topicFocus, items[i].Content) == 0 {
+			continue
+		}
 		if !containsAnyTextSearchTerm(normalizedContent, terms) {
 			continue
 		}
 		item := items[i]
-		item.Score = 1.0
+		item.Score = 1.0 + topicFocusedBoost(topicFocus, item.Content)
 		item.Content = relevantSnippet(query, item.Content)
 		matches = append(matches, item)
 	}
 	return matches
+}
+
+func prioritizeTopicMatches(query string, items []postgres.SearchResult) []postgres.SearchResult {
+	topicFocus := detectTopicFocus(query)
+	if !topicFocus.Enabled {
+		return orderResultsByDocumentPosition(items)
+	}
+	ordered := append([]postgres.SearchResult(nil), items...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		iTopic := topicFocusedTermCount(topicFocus, ordered[i].Content)
+		jTopic := topicFocusedTermCount(topicFocus, ordered[j].Content)
+		if iTopic != jTopic {
+			return iTopic > jTopic
+		}
+		if ordered[i].Score != ordered[j].Score {
+			return ordered[i].Score > ordered[j].Score
+		}
+		if ordered[i].DocumentID == ordered[j].DocumentID {
+			if ordered[i].ChunkIndex == ordered[j].ChunkIndex {
+				return ordered[i].ChunkID < ordered[j].ChunkID
+			}
+			return ordered[i].ChunkIndex < ordered[j].ChunkIndex
+		}
+		return ordered[i].DocumentID < ordered[j].DocumentID
+	})
+	return ordered
+}
+
+func countTopicFocusedChunks(topicFocus topicFocusIntent, items []postgres.SearchResult) int {
+	if !topicFocus.Enabled {
+		return 0
+	}
+	count := 0
+	for _, item := range items {
+		if topicFocusedTermCount(topicFocus, item.Content) > 0 {
+			count++
+		}
+	}
+	return count
 }
 
 func orderResultsByDocumentPosition(items []postgres.SearchResult) []postgres.SearchResult {
@@ -536,9 +700,16 @@ func (s *SearchService) searchTextFallback(ctx context.Context, tenantID string,
 
 func lastResortTermResults(query string, items []postgres.SearchResult, topK int) []postgres.SearchResult {
 	queryIntent := detectQueryIntent(query)
+	topicFocus := detectTopicFocus(query)
 	scored := make([]postgres.SearchResult, 0, len(items))
+	boostedChunks := 0
 	for i := range items {
 		score := mainTermOverlapScore(queryIntent, items[i].Content)
+		if topicBoost := topicFocusedBoost(topicFocus, items[i].Content); topicBoost > 0 {
+			score += topicBoost
+			boostedChunks++
+		}
+		score *= topicFocusedPenalty(topicFocus, items[i].Content)
 		if score <= 0 {
 			continue
 		}
@@ -563,6 +734,9 @@ func lastResortTermResults(query string, items []postgres.SearchResult, topK int
 		if len(deduped) == topK {
 			break
 		}
+	}
+	if topicFocus.Enabled {
+		log.Printf("topic_focused_retrieval=true main_topic_term=%q boosted_chunks=%d", topicFocus.MainTerm, boostedChunks)
 	}
 	return deduped
 }
@@ -604,6 +778,8 @@ func mainTermOverlapScore(intent queryIntent, content string) float64 {
 func scoreTextFallbackItems(query string, items []postgres.SearchResult, precisionMode bool) []postgres.SearchResult {
 	scored := make([]postgres.SearchResult, 0, len(items))
 	queryIntent := detectQueryIntent(query)
+	topicFocus := detectTopicFocus(query)
+	boostedChunks := 0
 	for i := range items {
 		if precisionMode && !hasStrongQueryMatch(query, items[i].Content) {
 			continue
@@ -611,6 +787,10 @@ func scoreTextFallbackItems(query string, items []postgres.SearchResult, precisi
 		score := keywordScore(query, items[i].Content)
 		score += exactEntityBoost(queryIntent, items[i].Content)
 		score += specificQuestionBoost(queryIntent, query, items[i].Content)
+		if topicBoost := topicFocusedBoost(topicFocus, items[i].Content); topicBoost > 0 {
+			score += topicBoost
+			boostedChunks++
+		}
 		threshold := minFinalScore
 		if precisionMode {
 			threshold = minPrecisionScore
@@ -621,12 +801,19 @@ func scoreTextFallbackItems(query string, items []postgres.SearchResult, precisi
 
 		items[i].Score = score * lengthPenalty(query, items[i].Content, score)
 		items[i].Score *= genericSectionPenalty(query, items[i].Content, precisionMode)
-		items[i].Score *= missingMainPhrasePenalty(queryIntent, items[i].Content)
+		if topicFocus.Enabled {
+			items[i].Score *= topicFocusedPenalty(topicFocus, items[i].Content)
+		} else {
+			items[i].Score *= missingMainPhrasePenalty(queryIntent, items[i].Content)
+		}
 		if items[i].Score < threshold {
 			continue
 		}
 		items[i].Content = relevantSnippet(query, items[i].Content)
 		scored = append(scored, items[i])
+	}
+	if topicFocus.Enabled {
+		log.Printf("topic_focused_retrieval=true main_topic_term=%q boosted_chunks=%d", topicFocus.MainTerm, boostedChunks)
 	}
 	return scored
 }
@@ -634,7 +821,9 @@ func scoreTextFallbackItems(query string, items []postgres.SearchResult, precisi
 func relaxedFallbackResults(query string, items []postgres.SearchResult) []postgres.SearchResult {
 	scored := make([]postgres.SearchResult, 0, len(items))
 	queryIntent := detectQueryIntent(query)
+	topicFocus := detectTopicFocus(query)
 	entityFilterApplied := shouldApplyEntityFilter(queryIntent.MainEntity)
+	boostedChunks := 0
 	for i := range items {
 		hasEntityMatch := entityFilterApplied && containsNormalizedPhrase(items[i].Content, queryIntent.MainEntity)
 		if !entityFilterApplied && queryIntent.MainPhrase != "" && !containsNormalizedPhrase(items[i].Content, queryIntent.MainPhrase) {
@@ -651,6 +840,11 @@ func relaxedFallbackResults(query string, items []postgres.SearchResult) []postg
 		}
 		score += exactEntityBoost(queryIntent, items[i].Content)
 		score += specificQuestionBoost(queryIntent, query, items[i].Content)
+		if topicBoost := topicFocusedBoost(topicFocus, items[i].Content); topicBoost > 0 {
+			score += topicBoost
+			boostedChunks++
+		}
+		score *= topicFocusedPenalty(topicFocus, items[i].Content)
 		if score < 0.08 {
 			continue
 		}
@@ -679,11 +873,15 @@ func relaxedFallbackResults(query string, items []postgres.SearchResult) []postg
 		}
 	}
 
+	if topicFocus.Enabled {
+		log.Printf("topic_focused_retrieval=true main_topic_term=%q boosted_chunks=%d", topicFocus.MainTerm, boostedChunks)
+	}
 	return deduped
 }
 
 func finalizeSearchResults(query string, items []postgres.SearchResult, topK int) []postgres.SearchResult {
 	queryIntent := detectQueryIntent(query)
+	topicFocus := detectTopicFocus(query)
 	entityFilterApplied := shouldApplyEntityFilter(queryIntent.MainEntity)
 	exactFound := false
 	for _, item := range items {
@@ -693,6 +891,13 @@ func finalizeSearchResults(query string, items []postgres.SearchResult, topK int
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool {
+		if topicFocus.Enabled {
+			iTopic := topicFocusedTermCount(topicFocus, items[i].Content)
+			jTopic := topicFocusedTermCount(topicFocus, items[j].Content)
+			if iTopic != jTopic {
+				return iTopic > jTopic
+			}
+		}
 		iIntentExact := hasExactIntentMatchInContent(queryIntent, items[i].Content)
 		jIntentExact := hasExactIntentMatchInContent(queryIntent, items[j].Content)
 		if iIntentExact != jIntentExact {
@@ -1402,6 +1607,104 @@ func relaxedKeywordScore(query, content string) float64 {
 	return score
 }
 
+func topicFocusedBoost(topicFocus topicFocusIntent, content string) float64 {
+	if !topicFocus.Enabled {
+		return 0
+	}
+	count := topicFocusedTermCount(topicFocus, content)
+	if count == 0 {
+		return 0
+	}
+	boost := 1.2 + math.Min(float64(count)*0.16, 0.8)
+	if isTopicDefinitionLike(topicFocus, content) {
+		boost += 0.45
+	}
+	return boost
+}
+
+func topicFocusedPenalty(topicFocus topicFocusIntent, content string) float64 {
+	if !topicFocus.Enabled {
+		return 1
+	}
+	if topicFocusedTermCount(topicFocus, content) > 0 {
+		return 1
+	}
+	if isGenericProgrammingContent(content) {
+		return 0.18
+	}
+	return 0.42
+}
+
+func topicFocusedTermCount(topicFocus topicFocusIntent, content string) int {
+	if !topicFocus.Enabled {
+		return 0
+	}
+	normalizedContent := NormalizeSearchText(content)
+	count := 0
+	seen := make(map[string]bool, len(topicFocus.Variants))
+	for _, variant := range topicFocus.Variants {
+		variant = NormalizeSearchText(variant)
+		if variant == "" || seen[variant] {
+			continue
+		}
+		seen[variant] = true
+		count += countWholeTerm(normalizedContent, variant)
+	}
+	return count
+}
+
+func isTopicDefinitionLike(topicFocus topicFocusIntent, content string) bool {
+	if !topicFocus.Enabled {
+		return false
+	}
+	normalizedContent := NormalizeSearchText(content)
+	for _, variant := range topicFocus.Variants {
+		variant = NormalizeSearchText(variant)
+		if variant == "" {
+			continue
+		}
+		for _, pattern := range []string{
+			variant + " es ",
+			variant + " son ",
+			variant + " se define ",
+			variant + " consiste ",
+			variant + " permite ",
+			"un " + variant + " ",
+			"una " + variant + " ",
+			"los " + variant + " ",
+			"las " + variant + " ",
+		} {
+			if strings.Contains(normalizedContent, pattern) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isGenericProgrammingContent(content string) bool {
+	normalizedContent := NormalizeSearchText(content)
+	if normalizedContent == "" {
+		return false
+	}
+	genericHits := 0
+	for _, phrase := range []string{
+		"logica de programacion",
+		"fundamentos de programacion",
+		"programacion general",
+		"conceptos basicos",
+		"estructuras de control",
+		"algoritmos",
+		"lenguajes de programacion",
+		"introduccion",
+	} {
+		if strings.Contains(normalizedContent, phrase) {
+			genericHits++
+		}
+	}
+	return genericHits >= 1
+}
+
 func detectQueryIntent(query string) queryIntent {
 	normalizedQuery := NormalizeSearchText(query)
 	terms := meaningfulTerms(normalizedQuery)
@@ -2087,8 +2390,19 @@ func relevantSnippet(query, content string) string {
 	lowerContent := NormalizeSearchText(content)
 	lowerQuery := NormalizeSearchText(query)
 	queryIntent := detectQueryIntent(query)
+	topicFocus := detectTopicFocus(query)
 	index := -1
-	if queryIntent.MainEntity != "" {
+	if topicFocus.Enabled {
+		for _, variant := range topicFocus.Variants {
+			if variant = NormalizeSearchText(variant); variant != "" {
+				index = strings.Index(lowerContent, variant)
+				if index >= 0 {
+					break
+				}
+			}
+		}
+	}
+	if index < 0 && queryIntent.MainEntity != "" {
 		index = strings.Index(lowerContent, queryIntent.MainEntity)
 	}
 	if index < 0 {

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"auradb-pipeline/internal/repository/postgres"
@@ -20,6 +22,19 @@ type AskHandler struct {
 	searchRepo    *postgres.SearchRepository
 	chatService   *service.OpenAIChatService
 	askLogRepo    *postgres.AskLogRepository
+	memoryMu      sync.Mutex
+	memoryByUser  map[string]conversationMemory
+}
+
+type conversationMemory struct {
+	Turns []conversationTurn
+}
+
+type conversationTurn struct {
+	Question    string
+	Answer      string
+	DocumentIDs []string
+	CreatedAt   time.Time
 }
 
 type askResponse struct {
@@ -44,6 +59,8 @@ const (
 	askSummaryTopK   = 45
 	askSectionTopK   = 10
 	askStructureTopK = 12
+	askMultiDocMaxK  = 20
+	askMultiDocMinK  = 2
 
 	insufficientProcessedContentAnswer = "El documento aún no tiene contenido procesado suficiente para responder."
 )
@@ -54,6 +71,7 @@ func NewAskHandler(searchService *service.SearchService, searchRepo *postgres.Se
 		searchRepo:    searchRepo,
 		chatService:   chatService,
 		askLogRepo:    askLogRepo,
+		memoryByUser:  make(map[string]conversationMemory),
 	}
 }
 
@@ -75,6 +93,20 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	detailedMode := isDetailedExplanationQuestion(normalizedQuestionForRetrieval)
 	documentID := strings.TrimSpace(r.URL.Query().Get("document_id"))
 	documentIDs := parseDocumentIDs(r)
+	conversationContextUsed := false
+	multiDocumentFollowupMode := false
+	if documentID == "" && len(documentIDs) == 0 && isConversationFollowUpQuestion(question) {
+		if rememberedDocumentIDs := h.conversationDocumentIDs(ipcCtx.TenantID, ipcCtx.UserID); len(rememberedDocumentIDs) > 0 {
+			documentIDs = rememberedDocumentIDs
+			conversationContextUsed = true
+			log.Printf("conversation_context_used=true")
+			if len(documentIDs) > 1 {
+				multiDocumentFollowupMode = true
+				log.Printf("multi_document_followup_mode=true")
+				log.Printf("followup_document_ids=%s", strings.Join(documentIDs, ","))
+			}
+		}
+	}
 	if documentID != "" {
 		documentIDs = []string{documentID}
 	} else if len(documentIDs) == 1 {
@@ -157,6 +189,8 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			documentsWithContent,
 			documentsWithoutContent,
 		)
+		log.Printf("chunks_per_document=%q", chunksPerDocumentLog(validChunks, documentIDs))
+		log.Printf("documents_used=%d", documentsWithContent)
 		if len(validChunks) == 0 {
 			answer := "Ninguno de los documentos tiene contenido procesado."
 			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, "", nil)
@@ -304,8 +338,36 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		requestedTopK = 20
 	}
 
-	if multiDocumentMode && isLoadedDocumentsOverviewQuestion(normalizedQuestionForRetrieval) {
-		allChunks := limitChunksPerDocument(orderAskChunksByScoreOrPosition(multiDocumentChunks), 20)
+	if multiDocumentFollowupMode && isComparativeFollowUpQuestion(normalizedQuestionForRetrieval) {
+		allChunks := selectMultiDocumentCoverageChunks(multiDocumentChunks, askMultiDocMinK, askMultiDocMaxK)
+		log.Printf("chunks_per_document=%q", chunksPerDocumentLog(allChunks, documentIDs))
+		contextText, sources := buildAskContext(allChunks)
+		answer := h.buildMultiDocumentFollowupComparisonAnswer(r.Context(), ipcCtx.TenantID, allChunks)
+		if strings.TrimSpace(answer) != "" {
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
+			logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, allChunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, allChunks, sources)
+			return
+		}
+	}
+
+	if multiDocumentMode && isCrossDocumentAnalysisQuestion(normalizedQuestionForRetrieval) {
+		allChunks := selectMultiDocumentCoverageChunks(multiDocumentChunks, askMultiDocMinK, askMultiDocMaxK)
+		contextText, sources := buildAskContext(allChunks)
+		answer := h.buildCrossDocumentAnalysisAnswer(r.Context(), ipcCtx.TenantID, allChunks)
+		if strings.TrimSpace(answer) != "" {
+			documentsCompared := countUniqueDocumentsInChunks(allChunks)
+			log.Printf("cross_document_analysis=true")
+			log.Printf("documents_compared=%d", documentsCompared)
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, contextText, sources)
+			logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, allChunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, allChunks, sources)
+			return
+		}
+	}
+
+	if multiDocumentMode && isMultiDocumentGeneralAnalysisQuestion(normalizedQuestionForRetrieval) {
+		allChunks := selectMultiDocumentCoverageChunks(multiDocumentChunks, askMultiDocMinK, askMultiDocMaxK)
 		contextText, sources := buildAskContext(allChunks)
 		answer := h.buildMultiDocumentOverviewAnswer(r.Context(), ipcCtx.TenantID, allChunks)
 		if strings.TrimSpace(answer) != "" {
@@ -337,6 +399,14 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			logDocumentScopedAnswer(documentID, activeFilename, nil)
 			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, insufficientProcessedContentAnswer, "", nil, nil)
 			return
+		}
+	}
+	if multiDocumentMode {
+		retrievedChunks = ensureMultiDocumentCoverage(retrievedChunks, multiDocumentChunks, askMultiDocMinK, askMultiDocMaxK)
+		log.Printf("chunks_per_document=%q", chunksPerDocumentLog(retrievedChunks, documentIDs))
+		if conversationContextUsed && multiDocumentFollowupMode {
+			log.Printf("multi_document_followup_mode=true")
+			log.Printf("followup_document_ids=%s", strings.Join(documentIDs, ","))
 		}
 	}
 	retrievedChunks = filterChunksByDocumentID(retrievedChunks, documentID)
@@ -806,6 +876,128 @@ func (h *AskHandler) DeleteHistoryItem(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *AskHandler) conversationDocumentIDs(tenantID string, userID string) []string {
+	if h == nil {
+		return nil
+	}
+	key := conversationMemoryKey(tenantID, userID)
+	h.memoryMu.Lock()
+	defer h.memoryMu.Unlock()
+	memory := h.memoryByUser[key]
+	return latestConversationDocumentIDs(memory)
+}
+
+func (h *AskHandler) rememberConversationTurn(tenantID string, userID string, question string, answer string, documentIDs []string, createdAt time.Time) {
+	if h == nil {
+		return
+	}
+	key := conversationMemoryKey(tenantID, userID)
+	h.memoryMu.Lock()
+	defer h.memoryMu.Unlock()
+	if h.memoryByUser == nil {
+		h.memoryByUser = make(map[string]conversationMemory)
+	}
+
+	question = strings.TrimSpace(question)
+	answer = strings.TrimSpace(answer)
+	documentIDs = uniqueStringsPreservingOrder(documentIDs)
+	if question == "" && answer == "" && len(documentIDs) == 0 {
+		return
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
+	turn := conversationTurn{
+		Question:    service.SanitizeSensitiveText(question),
+		Answer:      service.SanitizeSensitiveText(answer),
+		DocumentIDs: documentIDs,
+		CreatedAt:   createdAt,
+	}
+	memory := h.memoryByUser[key]
+	memory.Turns = append([]conversationTurn{turn}, memory.Turns...)
+	if len(memory.Turns) > 5 {
+		memory.Turns = memory.Turns[:5]
+	}
+	h.memoryByUser[key] = memory
+}
+
+func latestConversationDocumentIDs(memory conversationMemory) []string {
+	for _, turn := range memory.Turns {
+		if len(turn.DocumentIDs) > 0 {
+			return append([]string(nil), turn.DocumentIDs...)
+		}
+	}
+	return nil
+}
+
+func conversationMemoryKey(tenantID string, userID string) string {
+	return strings.TrimSpace(tenantID) + ":" + strings.TrimSpace(userID)
+}
+
+func isConversationFollowUpQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(normalized,
+		"y cual",
+		"y cuales",
+		"de esos",
+		"entre ellos",
+		"comparalos",
+		"compara los",
+		"comparalos",
+		"cual es mas importante",
+		"cual es el mas importante",
+		"cual seria mas importante",
+		"explica mejor",
+		"amplia eso",
+		"ampliar eso",
+	)
+}
+
+func isComparativeFollowUpQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(normalized,
+		"cual es mas importante",
+		"cual es el mas importante",
+		"cual seria mas importante",
+		"cual pesa mas",
+		"cual pesa más",
+		"cual es mejor",
+		"compara",
+		"comparalos",
+		"diferencias",
+	)
+}
+
+func conversationDocumentIDsFromResponse(chunks []postgres.SearchResult, sources []askSource) []string {
+	documentIDs := make([]string, 0)
+	for _, source := range sources {
+		if id := strings.TrimSpace(source.DocumentID); id != "" {
+			documentIDs = append(documentIDs, id)
+		}
+	}
+	for _, chunk := range chunks {
+		if id := strings.TrimSpace(chunk.DocumentID); id != "" {
+			documentIDs = append(documentIDs, id)
+		}
+	}
+	return uniqueStringsPreservingOrder(documentIDs)
+}
+
+func uniqueStringsPreservingOrder(values []string) []string {
+	unique := make([]string, 0, len(values))
+	seen := make(map[string]bool)
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		unique = append(unique, value)
+	}
+	return unique
+}
+
 func (h *AskHandler) persistAskLog(r *http.Request, tenantID, userID, documentID, question, answer, contextText string, sources []askSource) {
 	if h.askLogRepo == nil {
 		return
@@ -860,14 +1052,25 @@ func (h *AskHandler) writeAskResponse(w http.ResponseWriter, r *http.Request, te
 		log.Printf("interpreted_answer_used=true")
 	}
 	answer = appendSourcesToAnswer(answer, sources)
+	if documentsCited := documentsCitedCount(sources); documentsCited > 1 {
+		log.Printf("citation_mode=true")
+		log.Printf("documents_cited=%d", documentsCited)
+	}
+	if ipcCtx, ok := GetIPC(r); ok && strings.TrimSpace(answer) != "" {
+		h.rememberConversationTurn(tenantID, ipcCtx.UserID, question, answer, conversationDocumentIDsFromResponse(chunks, sources), time.Now())
+	}
 	logAnswerSources(sources)
 	writeAskResponse(w, question, answer, contextText, chunks, sources)
+}
+
+func documentsCitedCount(sources []askSource) int {
+	return len(orderSourceLabelsForDisplay(answerSourceLabels(sources)))
 }
 
 func writeAskResponse(w http.ResponseWriter, question, answer, contextText string, chunks []postgres.SearchResult, sources []askSource) {
 	totalRedacted := 0
 	var redacted int
-	answer, redacted = sanitizeAnswerPreservingSourceLine(answer)
+	answer, redacted = sanitizeAnswerPreservingSourceLineAndSourceNames(answer, sources)
 	totalRedacted += redacted
 	answer = cleanDisplayFormatting(cleanFinalAnswer(answer))
 	contextText, redacted = service.SanitizeSensitiveTextWithCount(contextText)
@@ -880,7 +1083,7 @@ func writeAskResponse(w http.ResponseWriter, question, answer, contextText strin
 		sources[i].Excerpt, redacted = service.SanitizeSensitiveTextWithCount(sources[i].Excerpt)
 		totalRedacted += redacted
 		if strings.Contains(sources[i].DocumentName, "[REDACTADO]") {
-			sources[i].DocumentName = cleanDisplayFormatting(sources[i].DocumentName)
+			sources[i].DocumentName = fallbackSourceName(sources[i])
 		}
 	}
 	if totalRedacted > 0 {
@@ -897,15 +1100,73 @@ func writeAskResponse(w http.ResponseWriter, question, answer, contextText strin
 }
 
 func sanitizeAnswerPreservingSourceLine(answer string) (string, int) {
-	sourceStart := sourceLineStartIndex(answer)
+	return sanitizeAnswerPreservingSourceLineAndSourceNames(answer, nil)
+}
+
+func sanitizeAnswerPreservingSourceLineAndSourceNames(answer string, sources []askSource) (string, int) {
+	protectedAnswer, protectedValues := protectSourceNames(answer, sources)
+	sourceStart := sourceLineStartIndex(protectedAnswer)
 	if sourceStart < 0 {
-		return service.SanitizeSensitiveTextWithCount(answer)
+		sanitized, redacted := service.SanitizeSensitiveTextWithCount(protectedAnswer)
+		return restoreProtectedSourceNames(sanitized, protectedValues), redacted
 	}
-	body := strings.TrimRight(answer[:sourceStart], "\n")
-	sourceLine := answer[sourceStart:]
+	body := strings.TrimRight(protectedAnswer[:sourceStart], "\n")
+	sourceLine := protectedAnswer[sourceStart:]
 	sanitizedBody, redacted := service.SanitizeSensitiveTextWithCount(body)
 	log.Printf("source_redaction_skipped_for_filename=true")
-	return strings.TrimSpace(sanitizedBody) + "\n\n" + strings.TrimSpace(sourceLine), redacted
+	sanitized := strings.TrimSpace(sanitizedBody) + "\n\n" + strings.TrimSpace(sourceLine)
+	return restoreProtectedSourceNames(sanitized, protectedValues), redacted
+}
+
+func protectSourceNames(text string, sources []askSource) (string, []string) {
+	values := sourceNamesForProtection(sources)
+	for i, value := range values {
+		placeholder := sourceNamePlaceholder(i)
+		text = strings.ReplaceAll(text, value, placeholder)
+	}
+	return text, values
+}
+
+func restoreProtectedSourceNames(text string, values []string) string {
+	for i, value := range values {
+		text = strings.ReplaceAll(text, sourceNamePlaceholder(i), value)
+	}
+	return text
+}
+
+func sourceNamePlaceholder(index int) string {
+	return "__AURADB_SOURCE_NAME_" + strconv.Itoa(index) + "__"
+}
+
+func sourceNamesForProtection(sources []askSource) []string {
+	values := make([]string, 0, len(sources)*2)
+	seen := make(map[string]bool)
+	for _, source := range sources {
+		for _, value := range []string{
+			strings.TrimSpace(source.DocumentName),
+			cleanDisplayFormatting(strings.TrimSpace(source.DocumentName)),
+		} {
+			if value == "" || strings.Contains(value, "[REDACTADO]") || seen[value] {
+				continue
+			}
+			seen[value] = true
+			values = append(values, value)
+		}
+	}
+	sort.SliceStable(values, func(i, j int) bool {
+		return len([]rune(values[i])) > len([]rune(values[j]))
+	})
+	return values
+}
+
+func fallbackSourceName(source askSource) string {
+	if name := strings.TrimSpace(source.DocumentName); name != "" && !strings.Contains(name, "[REDACTADO]") {
+		return cleanDisplayFormatting(name)
+	}
+	if id := strings.TrimSpace(source.DocumentID); id != "" {
+		return id
+	}
+	return ""
 }
 
 func sourceLineStartIndex(answer string) int {
@@ -1029,37 +1290,183 @@ func looksLikeDetailedExplanation(answer string) bool {
 
 func buildDetailedExplanationFallback(question string, chunks []postgres.SearchResult, sources []askSource) string {
 	chunks = limitChunksForDetailedExplanation(chunks)
+	if chunksLookLikeSpreadsheet(chunks) {
+		return buildSpreadsheetDetailedExplanationFallback(chunks, sources)
+	}
+	if service.DetectDocumentContentTypeFromChunks(chunks) == service.DocumentContentTypeTechnical {
+		return buildTechnicalDetailedExplanationFallback(chunks, sources)
+	}
 	if answer := buildTransportDetailedExplanationFallback(chunks, sources); answer != "" {
 		return answer
 	}
 
 	sections := detailedSectionDescriptions(chunks)
 	if len(sections) == 0 {
-		sections = []string{"el tema central presentado", "las ideas que amplían ese tema", "las implicaciones descritas por el texto"}
+		sections = []string{"el asunto principal presentado en el texto", "las ideas que amplían ese asunto", "las implicaciones descritas por la fuente"}
 	}
 	for len(sections) < 3 {
 		sections = append(sections, sections[len(sections)-1])
 	}
 
 	var builder strings.Builder
-	builder.WriteString("El documento explica ")
+	builder.WriteString("Introducción\n")
+	builder.WriteString("La explicación aborda ")
 	builder.WriteString(lowerFirstRune(strings.TrimSuffix(sections[0], ".")))
-	builder.WriteString(". La explicación se puede leer como una exposición del tema principal, sus partes y la forma en que esas partes se conectan dentro del texto.\n\n")
-	builder.WriteString("Primero, aborda ")
+	builder.WriteString(". Presenta el contenido como una exposición que permite entender su alcance, sus ideas principales y la relación entre los puntos desarrollados.\n\n")
+	builder.WriteString("Desarrollo\n")
+	builder.WriteString("Inicialmente, desarrolla ")
 	builder.WriteString(lowerFirstRune(strings.TrimSuffix(sections[0], ".")))
-	builder.WriteString(". Esta parte introduce la base conceptual del documento y permite entender qué asunto se está desarrollando.\n\n")
-	builder.WriteString("Después, describe ")
+	builder.WriteString(". Esta parte introduce la base conceptual y permite ubicar el asunto que organiza la exposición.\n\n")
+	builder.WriteString("Posteriormente, describe ")
 	builder.WriteString(lowerFirstRune(strings.TrimSuffix(sections[1], ".")))
-	builder.WriteString(". Aquí el texto amplía la mirada inicial y muestra relaciones entre ideas, procesos o características que dan más profundidad al tema.\n\n")
-	builder.WriteString("Finalmente, desarrolla ")
+	builder.WriteString(". Esta sección amplía la lectura inicial y muestra relaciones entre ideas, procesos o características que dan más profundidad al contenido.\n\n")
+	builder.WriteString("Además, desarrolla ")
 	builder.WriteString(lowerFirstRune(strings.TrimSuffix(sections[2], ".")))
-	builder.WriteString(". Esta parte completa la explicación porque conecta los aspectos anteriores con una lectura más amplia del contenido.\n\n")
-	builder.WriteString("En conclusión, el documento presenta una explicación articulada del tema y permite comprenderlo de forma progresiva, desde sus bases hasta sus aspectos más desarrollados.\n")
+	builder.WriteString(". Esta lectura completa la explicación porque conecta los aspectos anteriores con una visión más amplia del contenido.\n\n")
+	builder.WriteString("Conclusión\n")
+	builder.WriteString("En conjunto, el texto presenta una explicación articulada y permite comprender el contenido de forma progresiva, desde sus bases hasta sus aspectos más desarrollados.\n")
 	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
 		builder.WriteString("\n")
 		builder.WriteString(sourceLine)
 	}
 	return removeForbiddenDetailedExpressions(strings.TrimSpace(builder.String()))
+}
+
+func buildSpreadsheetDetailedExplanationFallback(chunks []postgres.SearchResult, sources []askSource) string {
+	overview := parseSpreadsheetOverview(chunks)
+	columns := strings.TrimSpace(overview.columns)
+	if columns == "" {
+		columns = "no se identificaron columnas con claridad"
+	}
+	rows := strings.TrimSpace(overview.rows)
+	if rows == "" {
+		rows = "no disponible"
+	}
+
+	hallazgo := spreadsheetOverviewDescription(chunks)
+	if hallazgo == "" {
+		hallazgo = "el archivo contiene datos estructurados que deben leerse por columnas y registros"
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Introducción\n")
+	builder.WriteString("La fuente contiene datos estructurados en una hoja de cálculo. La lectura principal depende de sus columnas, del número de registros y de los valores incluidos en cada fila.\n\n")
+	builder.WriteString("Desarrollo\n")
+	builder.WriteString("Columnas: ")
+	builder.WriteString(columns)
+	builder.WriteString("\n\n")
+	builder.WriteString("Número de registros: ")
+	builder.WriteString(rows)
+	builder.WriteString("\n\n")
+	builder.WriteString("Hallazgos principales: ")
+	builder.WriteString("Inicialmente, la hoja presenta ")
+	builder.WriteString(lowerFirstRune(strings.TrimSuffix(hallazgo, ".")))
+	builder.WriteString(". Además, la interpretación debe centrarse en la relación entre sus columnas y en los valores registrados, sin convertir las filas en texto narrativo ni perder la estructura tabular.\n\n")
+	builder.WriteString("Conclusión\n")
+	builder.WriteString("En conjunto, la tabla ofrece una base organizada para revisar columnas, conteos y patrones sin perder la precisión de los datos originales.\n")
+	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
+		builder.WriteString("\n")
+		builder.WriteString(sourceLine)
+	}
+	return removeForbiddenDetailedExpressions(strings.TrimSpace(builder.String()))
+}
+
+func buildTechnicalDetailedExplanationFallback(chunks []postgres.SearchResult, sources []askSource) string {
+	rawText := chunksTextSample(chunks, 20000)
+	text := service.SanitizeSensitiveText(rawText)
+	sanitizedChunks := sanitizeChunksForDetailedFallback(chunks)
+	description := cleanOverviewDescription(documentOverviewDescription(sanitizedChunks))
+	if description == "" {
+		description = "un procedimiento técnico descrito en la fuente"
+	}
+	components := detailedTechnicalComponents(rawText)
+	flow := detailedTechnicalFlow(rawText)
+	risk := "No se detectaron credenciales o tokens sensibles evidentes en el contenido disponible."
+	if strings.Contains(text, "[REDACTADO]") || technicalTextHasSensitiveHint(rawText) {
+		risk = "Aparecen referencias a credenciales, tokens o datos sensibles; esos valores deben mantenerse ocultos y no compartirse en la respuesta."
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Introducción\n")
+	builder.WriteString("Este material tiene como propósito explicar ")
+	builder.WriteString(lowerFirstRune(strings.TrimSuffix(description, ".")))
+	builder.WriteString(". Su utilidad es guiar la ejecución o comprensión de ese procedimiento técnico con base en los elementos que aparecen en el texto.\n\n")
+	builder.WriteString("Desarrollo\n")
+	builder.WriteString("Componentes principales: ")
+	builder.WriteString(components)
+	builder.WriteString("\n\n")
+	builder.WriteString("Flujo técnico: ")
+	builder.WriteString(flow)
+	builder.WriteString("\n\n")
+	builder.WriteString("Riesgos o datos sensibles si existen: ")
+	builder.WriteString(risk)
+	builder.WriteString("\n\n")
+	builder.WriteString("Conclusión\n")
+	builder.WriteString("En conjunto, el material permite seguir el procedimiento con mayor claridad y revisar sus componentes sin exponer información sensible.\n")
+	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
+		builder.WriteString("\n")
+		builder.WriteString(sourceLine)
+	}
+	return removeForbiddenDetailedExpressions(strings.TrimSpace(builder.String()))
+}
+
+func sanitizeChunksForDetailedFallback(chunks []postgres.SearchResult) []postgres.SearchResult {
+	sanitized := make([]postgres.SearchResult, len(chunks))
+	copy(sanitized, chunks)
+	for i := range sanitized {
+		sanitized[i].Content = service.SanitizeSensitiveText(sanitized[i].Content)
+	}
+	return sanitized
+}
+
+func detailedTechnicalComponents(text string) string {
+	normalized := service.NormalizeSearchText(text)
+	components := make([]string, 0, 5)
+	if containsAnyNormalized(normalized, "docker", "docker compose", "dockerfile") {
+		components = append(components, "Docker")
+	}
+	if containsAnyNormalized(normalized, "curl", "endpoint", "api", "http") {
+		components = append(components, "API o endpoints HTTP")
+	}
+	if containsAnyNormalized(normalized, "token", "bearer", "jwt", "authorization") {
+		components = append(components, "autenticacion mediante token")
+	}
+	if containsAnyNormalized(normalized, "tenant", "tenant id") {
+		components = append(components, "identificador de tenant")
+	}
+	if containsAnyNormalized(normalized, "upload", "subir", "documento") {
+		components = append(components, "carga de documentos")
+	}
+	if len(components) == 0 {
+		return "El texto menciona elementos técnicos que deben seguirse como parte del procedimiento descrito."
+	}
+	return "Los componentes principales son " + joinNaturalList(components) + "."
+}
+
+func detailedTechnicalFlow(text string) string {
+	normalized := service.NormalizeSearchText(text)
+	steps := make([]string, 0, 4)
+	if containsAnyNormalized(normalized, "tenant", "tenant id") {
+		steps = append(steps, "identificar el tenant")
+	}
+	if containsAnyNormalized(normalized, "token", "bearer", "jwt", "authorization") {
+		steps = append(steps, "preparar la autenticacion")
+	}
+	if containsAnyNormalized(normalized, "curl", "endpoint", "api", "http") {
+		steps = append(steps, "ejecutar la solicitud contra la API")
+	}
+	if containsAnyNormalized(normalized, "upload", "subir", "documento") {
+		steps = append(steps, "enviar el documento y revisar el resultado")
+	}
+	if len(steps) == 0 {
+		return "El flujo técnico debe seguir el orden descrito por la fuente, respetando comandos, parámetros y datos requeridos."
+	}
+	return "El flujo técnico consiste en " + joinNaturalList(steps) + "."
+}
+
+func technicalTextHasSensitiveHint(text string) bool {
+	normalized := service.NormalizeSearchText(text)
+	return containsAnyNormalized(normalized, "api key", "apikey", "secret", "password", "token", "bearer", "client secret", "private key", "access key")
 }
 
 func buildTransportDetailedExplanationFallback(chunks []postgres.SearchResult, sources []askSource) string {
@@ -1069,16 +1476,18 @@ func buildTransportDetailedExplanationFallback(chunks []postgres.SearchResult, s
 	}
 
 	var builder strings.Builder
-	builder.WriteString("El documento explica la evolución histórica de los sistemas de transporte mundial desde las primeras formas de movilidad humana hasta las tecnologías contemporáneas.\n\n")
-	builder.WriteString("Primero, aborda la movilidad humana como la forma inicial de desplazamiento. En esa etapa, el traslado dependía de la fuerza física de las personas y de caminos simples, antes de que aparecieran soluciones técnicas más complejas.\n\n")
-	builder.WriteString("Después, describe la importancia de la tracción animal. El uso de animales permitió transportar más peso, recorrer mayores distancias y sostener actividades agrícolas, comerciales y militares con una capacidad superior a la movilidad exclusivamente humana.\n\n")
-	builder.WriteString("Luego, explica el papel de la rueda como una innovación decisiva. La rueda transformó el traslado terrestre porque facilitó carros, caminos, intercambio de bienes y conexiones más estables entre comunidades.\n\n")
-	builder.WriteString("También presenta la navegación como una ampliación fundamental del transporte. Al aprovechar ríos, mares y rutas oceánicas, las sociedades pudieron conectar territorios lejanos, mover mercancías y expandir el comercio mundial.\n\n")
-	builder.WriteString("Más adelante, el documento incorpora la máquina de vapor como un cambio de escala. El vapor impulsó ferrocarriles y barcos, aceleró los viajes y fortaleció la industrialización al hacer más regular y potente el movimiento de personas y productos.\n\n")
-	builder.WriteString("Después aparece el motor de combustión, que abrió paso a automóviles, camiones, aviación moderna y nuevas formas de movilidad cotidiana. Este avance hizo que el transporte fuera más flexible, rápido y accesible para muchas actividades económicas y sociales.\n\n")
-	builder.WriteString("En la etapa contemporánea, el documento destaca los contenedores y el tren de alta velocidad. Los contenedores ordenaron el comercio global al estandarizar la carga, mientras que el tren de alta velocidad mostró cómo la tecnología ferroviaria podía competir con otros medios en rapidez, eficiencia y capacidad.\n\n")
-	builder.WriteString("Finalmente, la explicación llega a la movilidad eléctrica, la inteligencia artificial y el transporte futuro. La movilidad eléctrica apunta a reducir emisiones y dependencia de combustibles fósiles, mientras que la inteligencia artificial permite optimizar rutas, automatizar vehículos y diseñar sistemas más seguros. El transporte futuro se presenta como una combinación de sostenibilidad, automatización e integración entre distintos medios.\n\n")
-	builder.WriteString("En conclusión, el documento muestra que el transporte no evolucionó como una serie de inventos aislados, sino como un proceso histórico continuo en el que cada avance amplió la capacidad humana de desplazarse, comerciar, comunicarse y transformar el territorio.\n")
+	builder.WriteString("Introducción\n")
+	builder.WriteString("La explicación recorre la evolución histórica del transporte mundial desde las primeras formas de movilidad humana hasta las tecnologías contemporáneas. La idea principal es que cada avance amplió la capacidad de desplazamiento, intercambio comercial y organización territorial.\n\n")
+	builder.WriteString("Desarrollo\n")
+	builder.WriteString("Inicialmente, la movilidad humana aparece como la forma básica de desplazamiento. En esa etapa, el traslado dependía de la fuerza física de las personas y de caminos simples, antes de que surgieran soluciones técnicas más complejas.\n\n")
+	builder.WriteString("Posteriormente, la tracción animal ocupa un lugar importante porque permitió transportar más peso, recorrer mayores distancias y sostener actividades agrícolas, comerciales y militares con una capacidad superior a la movilidad exclusivamente humana.\n\n")
+	builder.WriteString("Además, la rueda se presenta como una innovación decisiva. Transformó el traslado terrestre porque facilitó carros, caminos, intercambio de bienes y conexiones más estables entre comunidades.\n\n")
+	builder.WriteString("Por otra parte, la navegación amplía el alcance del transporte al aprovechar ríos, mares y rutas oceánicas. Con ello, las sociedades pudieron conectar territorios lejanos, mover mercancías y expandir el comercio mundial.\n\n")
+	builder.WriteString("La máquina de vapor marca un cambio de escala: impulsó ferrocarriles y barcos, aceleró los viajes y fortaleció la industrialización al hacer más regular y potente el movimiento de personas y productos.\n\n")
+	builder.WriteString("El motor de combustión abre paso a automóviles, camiones, aviación moderna y nuevas formas de movilidad cotidiana. Este avance hizo que el transporte fuera más flexible, rápido y accesible para muchas actividades económicas y sociales.\n\n")
+	builder.WriteString("En la etapa contemporánea, la fuente destaca los contenedores, el tren de alta velocidad, la movilidad eléctrica y la inteligencia artificial. Los contenedores ordenaron el comercio global al estandarizar la carga; el tren de alta velocidad mostró una alternativa rápida y eficiente; la movilidad eléctrica apunta a reducir emisiones; y la inteligencia artificial permite optimizar rutas, automatizar vehículos y diseñar medios más seguros.\n\n")
+	builder.WriteString("Conclusión\n")
+	builder.WriteString("En conjunto, el texto muestra que el transporte no evolucionó como una serie de inventos aislados, sino como un proceso histórico continuo en el que cada avance amplió la capacidad humana de desplazarse, comerciar, comunicarse y transformar el territorio.\n")
 	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
 		builder.WriteString("\n")
 		builder.WriteString(sourceLine)
@@ -1108,26 +1517,34 @@ func removeForbiddenDetailedExpressions(answer string) string {
 
 var forbiddenDetailedExpressions = []string{
 	"chunks",
+	"chunks recuperados",
 	"contenido procesado",
+	"ejes recuperados",
 	"temas recuperados",
 	"respuesta organiza",
+	"respuesta generada",
 	"consulta planteada",
 	"material suficiente",
 	"elementos principales del documento",
 	"punto de partida",
+	"primer eje",
 	"eje se centra",
 	"eje desarrolla",
 }
 
 var forbiddenDetailedExpressionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bchunks?\b`),
+	regexp.MustCompile(`(?i)chunks?\s+recuperados?`),
 	regexp.MustCompile(`(?i)contenido procesado`),
+	regexp.MustCompile(`(?i)ejes?\s+recuperados?`),
 	regexp.MustCompile(`(?i)temas recuperados`),
 	regexp.MustCompile(`(?i)respuesta organiza`),
+	regexp.MustCompile(`(?i)respuesta generada`),
 	regexp.MustCompile(`(?i)consulta planteada`),
 	regexp.MustCompile(`(?i)material suficiente`),
 	regexp.MustCompile(`(?i)elementos principales del documento`),
 	regexp.MustCompile(`(?i)punto de partida`),
+	regexp.MustCompile(`(?i)(?:el\s+)?primer eje`),
 	regexp.MustCompile(`(?i)eje se centra`),
 	regexp.MustCompile(`(?i)eje desarrolla`),
 }
@@ -1342,7 +1759,13 @@ func uppercaseLetterRatio(text string) float64 {
 func appendSourcesToAnswer(answer string, sources []askSource) string {
 	answer = polishFinalPresentation(answer, sources)
 	sourceLabels := orderSourceLabelsForDisplay(answerSourceLabels(sources))
-	if len(sourceLabels) == 0 || answerHasSourceLine(answer) {
+	if len(sourceLabels) == 0 {
+		return answer
+	}
+	if len(sourceLabels) > 1 {
+		return appendCitedSourcesToAnswer(answer, sourceLabels)
+	}
+	if answerHasSourceLine(answer) {
 		return answer
 	}
 	if len(sourceLabels) == 1 {
@@ -1351,12 +1774,102 @@ func appendSourcesToAnswer(answer string, sources []askSource) string {
 	return strings.TrimSpace(answer + "\n\nFuente: " + strings.Join(sourceLabels, "; "))
 }
 
+type answerCitation struct {
+	Marker      string
+	DisplayName string
+	MentionName string
+}
+
+func appendCitedSourcesToAnswer(answer string, sourceLabels []string) string {
+	citations := answerCitationsFromLabels(sourceLabels)
+	if len(citations) == 0 {
+		return answer
+	}
+	body := stripAnswerSourceBlock(answer)
+	body = addInlineCitationsToAnswer(body, citations)
+
+	var builder strings.Builder
+	builder.WriteString(strings.TrimSpace(body))
+	builder.WriteString("\n\nFuentes:")
+	for _, citation := range citations {
+		builder.WriteString("\n")
+		builder.WriteString(citation.DisplayName)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func answerCitationsFromLabels(sourceLabels []string) []answerCitation {
+	citations := make([]answerCitation, 0, len(sourceLabels))
+	for i, label := range sourceLabels {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			continue
+		}
+		marker := "[" + string(rune('A'+len(citations))) + "]"
+		citations = append(citations, answerCitation{
+			Marker:      marker,
+			DisplayName: citationDisplayLabel(label, marker),
+			MentionName: citationMentionName(label),
+		})
+		if i >= 25 {
+			break
+		}
+	}
+	return citations
+}
+
+func citationDisplayLabel(label string, marker string) string {
+	if strings.Contains(label, " — Hoja: ") {
+		return label + " " + marker
+	}
+	return marker + " " + label
+}
+
+func citationMentionName(label string) string {
+	name := strings.TrimSpace(label)
+	if idx := strings.Index(name, " — Hoja: "); idx >= 0 {
+		name = strings.TrimSpace(name[:idx])
+	}
+	return name
+}
+
+func addInlineCitationsToAnswer(answer string, citations []answerCitation) string {
+	for _, citation := range citations {
+		name := strings.TrimSpace(citation.MentionName)
+		if name == "" || !strings.Contains(answer, name) {
+			continue
+		}
+		cited := name + " " + citation.Marker
+		answer = strings.ReplaceAll(answer, cited, name)
+		answer = strings.ReplaceAll(answer, name, cited)
+	}
+	return answer
+}
+
+func stripAnswerSourceBlock(answer string) string {
+	sourceStart := sourceLineStartIndex(answer)
+	if sourceStart < 0 {
+		return strings.TrimSpace(answer)
+	}
+	return strings.TrimSpace(answer[:sourceStart])
+}
+
 func polishFinalPresentation(answer string, sources []askSource) string {
 	answer = removeRawParserBlocks(cleanDisplayFormatting(answer))
+	if isCrossDocumentAnalysisAnswer(answer) {
+		return strings.TrimSpace(answer)
+	}
 	if rewritten := rewriteMixedDocumentPresentation(answer, sources); rewritten != "" {
 		return rewritten
 	}
 	return strings.TrimSpace(answer)
+}
+
+func isCrossDocumentAnalysisAnswer(answer string) bool {
+	normalized := service.NormalizeSearchText(answer)
+	return strings.Contains(normalized, "la relacion entre") &&
+		(strings.Contains(normalized, "en conjunto estos documentos permiten") ||
+			strings.Contains(normalized, "en conjunto estos documentos muestran"))
 }
 
 func rewriteMixedDocumentPresentation(answer string, sources []askSource) string {
@@ -1554,6 +2067,30 @@ func isLoadedDocumentsOverviewQuestion(question string) bool {
 	)
 }
 
+func isMultiDocumentGeneralAnalysisQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return isLoadedDocumentsOverviewQuestion(normalized) ||
+		isCrossDocumentAnalysisQuestion(normalized) ||
+		containsAnyNormalized(normalized,
+			"compara estos documentos",
+			"comparar estos documentos",
+			"compara los documentos",
+			"comparar los documentos",
+			"comparacion de documentos",
+			"comparación de documentos",
+		)
+}
+
+func isCrossDocumentAnalysisQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(normalized,
+		"relacion",
+		"como se relacionan",
+		"que conexion hay",
+		"que tienen en comun",
+	)
+}
+
 func (h *AskHandler) buildGlobalKnowledgeAnswer(ctx context.Context, tenantID string, chunks []postgres.SearchResult) string {
 	groups := groupChunksByDocument(chunks)
 	if len(groups) == 0 {
@@ -1594,6 +2131,9 @@ func (h *AskHandler) documentDisplayName(ctx context.Context, tenantID string, d
 			name = strings.TrimSpace(filename)
 		}
 	}
+	if strings.Contains(name, "[REDACTADO]") {
+		name = strings.TrimSpace(documentID)
+	}
 	return cleanDisplayFormatting(name)
 }
 
@@ -1612,21 +2152,453 @@ func (h *AskHandler) buildMultiDocumentOverviewAnswer(ctx context.Context, tenan
 	lines := make([]string, 0, len(documentIDs)+1)
 	for _, documentID := range documentIDs {
 		documentChunks := groups[documentID]
-		name := h.documentDisplayName(ctx, tenantID, documentID)
-		description := cleanOverviewDescription(documentOverviewDescription(documentChunks))
-		if description == "" {
-			description = "información procesada consultable."
+		profile := crossDocumentProfile{
+			ID:          documentID,
+			Name:        h.documentDisplayName(ctx, tenantID, documentID),
+			Type:        semanticDocumentType(documentChunks),
+			Purpose:     semanticDocumentPurpose(documentChunks),
+			Description: semanticDocumentDescription(documentChunks),
 		}
-		kind := "documento"
-		if chunksLookLikeSpreadsheet(documentChunks) {
-			kind = "archivo"
-		}
-		lines = append(lines, "El "+kind+" "+name+" contiene "+lowerFirstRune(strings.TrimSuffix(description, "."))+".")
+		lines = append(lines, crossDocumentProfilePresentation(profile))
 	}
 	if len(lines) > 1 {
 		lines = append(lines, "En conjunto, los documentos cargados reúnen información de "+strconv.Itoa(len(lines))+" archivos consultables.")
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+type crossDocumentProfile struct {
+	ID          string
+	Name        string
+	Type        string
+	Purpose     string
+	Topic       string
+	Area        string
+	Description string
+}
+
+func (h *AskHandler) buildCrossDocumentAnalysisAnswer(ctx context.Context, tenantID string, chunks []postgres.SearchResult) string {
+	groups := groupChunksByDocument(chunks)
+	if len(groups) < 2 {
+		return ""
+	}
+
+	profiles := h.crossDocumentProfiles(ctx, tenantID, groups)
+	if len(profiles) < 2 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(profiles)+2)
+	for _, profile := range profiles {
+		lines = append(lines, crossDocumentProfilePresentation(profile))
+	}
+
+	relationSubject := "ambos"
+	if len(profiles) > 2 {
+		relationSubject = "ellos"
+	}
+	lines = append(lines, crossDocumentRelationSentence(relationSubject, profiles))
+	lines = append(lines, crossDocumentConclusion(profiles))
+
+	return cleanDisplayFormatting(strings.Join(lines, "\n\n"))
+}
+
+func crossDocumentProfilePresentation(profile crossDocumentProfile) string {
+	description := strings.TrimSpace(strings.TrimSuffix(profile.Description, "."))
+	switch profile.Type {
+	case "data":
+		return "El archivo " + profile.Name + " contiene " + lowerFirstRune(description) + "."
+	case "technical":
+		return "El documento " + profile.Name + " explica " + removeLeadingDocumentVerb(description) + "."
+	default:
+		return "El documento " + profile.Name + " aborda " + removeLeadingDocumentVerb(description) + "."
+	}
+}
+
+func removeLeadingDocumentVerb(description string) string {
+	description = strings.TrimSpace(description)
+	replacements := []string{
+		"analiza ",
+		"explica ",
+		"describe ",
+		"contiene ",
+	}
+	normalized := service.NormalizeSearchText(description)
+	for _, replacement := range replacements {
+		if strings.HasPrefix(normalized, service.NormalizeSearchText(replacement)) {
+			return strings.TrimSpace(description[len(replacement):])
+		}
+	}
+	return lowerFirstRune(description)
+}
+
+func (h *AskHandler) crossDocumentProfiles(ctx context.Context, tenantID string, groups map[string][]postgres.SearchResult) []crossDocumentProfile {
+	documentIDs := make([]string, 0, len(groups))
+	for documentID := range groups {
+		documentIDs = append(documentIDs, documentID)
+	}
+	sort.Strings(documentIDs)
+
+	profiles := make([]crossDocumentProfile, 0, len(documentIDs))
+	for _, documentID := range documentIDs {
+		documentChunks := groups[documentID]
+		profile := crossDocumentProfile{
+			ID:          documentID,
+			Name:        h.documentDisplayName(ctx, tenantID, documentID),
+			Type:        semanticDocumentType(documentChunks),
+			Purpose:     semanticDocumentPurpose(documentChunks),
+			Topic:       semanticDocumentTopic(documentChunks),
+			Area:        semanticDocumentArea(documentChunks),
+			Description: semanticDocumentDescription(documentChunks),
+		}
+		profiles = append(profiles, profile)
+	}
+	return orderCrossDocumentProfilesForPresentation(profiles)
+}
+
+func (h *AskHandler) buildMultiDocumentFollowupComparisonAnswer(ctx context.Context, tenantID string, chunks []postgres.SearchResult) string {
+	groups := groupChunksByDocument(chunks)
+	if len(groups) < 2 {
+		return ""
+	}
+	profiles := h.crossDocumentProfiles(ctx, tenantID, groups)
+	if len(profiles) < 2 {
+		return ""
+	}
+	lines := make([]string, 0, len(profiles)+2)
+	for _, profile := range profiles {
+		subject := "El documento "
+		if profile.Type == "data" {
+			subject = "El archivo "
+		}
+		lines = append(lines, subject+profile.Name+" aporta "+profile.Description+".")
+	}
+	lines = append(lines, "Comparación\n"+followupComparisonDescription(profiles)+".")
+	lines = append(lines, "Conclusión\n"+followupComparisonConclusion(profiles)+".")
+
+	return cleanDisplayFormatting(strings.Join(lines, "\n\n"))
+}
+
+func followupComparisonDescription(profiles []crossDocumentProfile) string {
+	types := uniqueProfileValues(profiles, func(profile crossDocumentProfile) string { return profile.Type })
+	if containsString(types, "data") && containsString(types, "narrative") {
+		return "El contenido narrativo ofrece el marco conceptual, mientras que los datos tabulares permiten verificar, consultar o aterrizar esa información en registros concretos"
+	}
+	if containsString(types, "technical") && containsString(types, "narrative") {
+		return "El material narrativo explica el contexto y el técnico muestra cómo ese contexto se traduce en acciones, componentes o procedimientos"
+	}
+	if containsString(types, "data") && containsString(types, "technical") {
+		return "Los datos estructurados permiten validar o consultar información, mientras que el documento técnico explica cómo operar sobre ella"
+	}
+	return "Cada documento aporta una perspectiva distinta y la comparación debe considerar el propósito de todos antes de priorizar uno"
+}
+
+func followupComparisonConclusion(profiles []crossDocumentProfile) string {
+	types := uniqueProfileValues(profiles, func(profile crossDocumentProfile) string { return profile.Type })
+	if containsString(types, "data") && containsString(types, "narrative") {
+		return "No conviene descartar ninguno: el narrativo suele ser más importante para comprender el contexto, y el tabular para consultar evidencia o datos específicos"
+	}
+	if containsString(types, "technical") && containsString(types, "narrative") {
+		return "El más importante depende del objetivo: para entender el tema pesa más el narrativo; para ejecutar acciones pesa más el técnico"
+	}
+	if containsString(types, "data") && containsString(types, "technical") {
+		return "El más importante depende del uso: el técnico guía la acción y el tabular sostiene la consulta o validación de datos"
+	}
+	return "La importancia depende de la pregunta concreta, porque los documentos se complementan y deben leerse en conjunto"
+}
+
+func orderCrossDocumentProfilesForPresentation(profiles []crossDocumentProfile) []crossDocumentProfile {
+	ordered := append([]crossDocumentProfile(nil), profiles...)
+	if !profilesContainType(ordered, "narrative") || !profilesContainType(ordered, "data") {
+		return ordered
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return crossDocumentTypePresentationRank(ordered[i].Type) < crossDocumentTypePresentationRank(ordered[j].Type)
+	})
+	return ordered
+}
+
+func crossDocumentTypePresentationRank(documentType string) int {
+	switch documentType {
+	case "narrative":
+		return 0
+	case "technical":
+		return 1
+	case "data":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func profilesContainType(profiles []crossDocumentProfile, documentType string) bool {
+	for _, profile := range profiles {
+		if profile.Type == documentType {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticDocumentType(chunks []postgres.SearchResult) string {
+	if chunksLookLikeSpreadsheet(chunks) {
+		return "data"
+	}
+	if service.DetectDocumentContentTypeFromChunks(chunks) == service.DocumentContentTypeTechnical {
+		return "technical"
+	}
+	return "narrative"
+}
+
+func semanticDocumentPurpose(chunks []postgres.SearchResult) string {
+	if chunksLookLikeSpreadsheet(chunks) {
+		return "datos"
+	}
+	normalized := service.NormalizeSearchText(chunksTextSample(chunks, 12000))
+	switch {
+	case containsAnyNormalized(normalized, "instruccion", "paso", "curl", "docker", "endpoint", "api", "upload", "autorizacion", "authorization", "token"):
+		return "instrucciones"
+	case containsAnyNormalized(normalized, "auradb", "pipeline", "sistema", "plataforma", "backend", "frontend"):
+		return "sistema"
+	case containsAnyNormalized(normalized, "analisis", "analiza", "conclusion", "resumen", "evaluacion", "diagnostico"):
+		return "análisis"
+	default:
+		return "análisis"
+	}
+}
+
+func semanticDocumentTopic(chunks []postgres.SearchResult) string {
+	normalized := service.NormalizeSearchText(chunksTextSample(chunks, 12000))
+	switch {
+	case containsAnyNormalized(normalized, "proxima centauri", "próxima centauri", "exoplaneta", "exoplanetas"):
+		return "exploración de exoplanetas y el caso de Próxima Centauri"
+	case containsAnyNormalized(normalized, "logica de programacion", "lógica de programación", "estructura de datos", "estructuras de datos", "arreglo", "algoritmo"):
+		return "fundamentos de lógica de programación y estructuras de datos"
+	case containsAnyNormalized(normalized, "transporte", "movilidad", "rueda", "traccion", "navegacion", "vapor", "combustion"):
+		return "evolución histórica del transporte"
+	case chunksLookLikeSpreadsheet(chunks):
+		return "datos tabulares"
+	default:
+		description := cleanOverviewDescription(documentOverviewDescription(chunks))
+		return strings.TrimSpace(strings.TrimSuffix(description, "."))
+	}
+}
+
+func semanticDocumentArea(chunks []postgres.SearchResult) string {
+	normalized := service.NormalizeSearchText(chunksTextSample(chunks, 12000))
+	switch {
+	case containsAnyNormalized(normalized, "proxima centauri", "próxima centauri", "exoplaneta", "exoplanetas", "astronomia", "astronomía"):
+		return "la astronomía"
+	case containsAnyNormalized(normalized, "logica de programacion", "lógica de programación", "estructura de datos", "estructuras de datos", "arreglo", "algoritmo", "programacion", "programación", "informatica", "informática"):
+		return "la informática"
+	case containsAnyNormalized(normalized, "transporte", "movilidad", "rueda", "traccion", "navegacion", "vapor", "combustion"):
+		return "la historia del transporte"
+	case chunksLookLikeSpreadsheet(chunks):
+		return "los datos tabulares"
+	default:
+		return "su área especializada"
+	}
+}
+
+func semanticDocumentDescription(chunks []postgres.SearchResult) string {
+	docType := semanticDocumentType(chunks)
+	purpose := semanticDocumentPurpose(chunks)
+	if docType == "narrative" {
+		if description := naturalNarrativeDocumentDescription(chunks); description != "" {
+			return description
+		}
+	}
+	if docType == "data" {
+		if description := structuredDataDocumentDescription(chunks); description != "" {
+			return description
+		}
+	}
+	description := cleanOverviewDescription(documentOverviewDescription(chunks))
+	if description == "" {
+		switch docType {
+		case "data":
+			description = "datos estructurados consultables"
+		case "technical":
+			description = "instrucciones o componentes técnicos relevantes"
+		default:
+			description = "información narrativa para análisis"
+		}
+	}
+	description = strings.TrimSuffix(description, ".")
+	switch purpose {
+	case "sistema":
+		return lowerFirstRune(description) + " orientada a explicar un sistema"
+	case "datos":
+		return lowerFirstRune(description) + " orientados a consulta y validación"
+	case "instrucciones":
+		return lowerFirstRune(description) + " con propósito instructivo"
+	default:
+		return lowerFirstRune(description) + " para análisis"
+	}
+}
+
+func structuredDataDocumentDescription(chunks []postgres.SearchResult) string {
+	table := parseSpreadsheetOverview(chunks)
+	if table.rows == "" && table.columns == "" {
+		return ""
+	}
+	switch {
+	case table.rows != "" && table.columns != "":
+		return table.rows + " registros con las columnas " + formatSpreadsheetColumnsForDisplay(table.columns) + ", orientados a consulta y validación"
+	case table.rows != "":
+		return table.rows + " registros estructurados, orientados a consulta y validación"
+	default:
+		return "datos estructurados con las columnas " + formatSpreadsheetColumnsForDisplay(table.columns) + ", orientados a consulta y validación"
+	}
+}
+
+func formatSpreadsheetColumnsForDisplay(columns string) string {
+	separator := ","
+	if strings.Contains(columns, "|") {
+		separator = "|"
+	}
+	parts := strings.Split(columns, separator)
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cleaned = append(cleaned, part)
+		}
+	}
+	return joinNaturalList(cleaned)
+}
+
+func naturalNarrativeDocumentDescription(chunks []postgres.SearchResult) string {
+	normalized := service.NormalizeSearchText(chunksTextSample(chunks, 12000))
+	if containsAnyNormalized(normalized, "compendio historico", "compendio histórico") &&
+		containsAnyNormalized(normalized, "transporte", "movilidad", "rueda", "traccion", "navegacion") {
+		return "la evolución histórica de los sistemas de transporte, desde sus primeras formas hasta la movilidad contemporánea"
+	}
+	if containsAnyNormalized(normalized, "transporte", "movilidad", "rueda", "traccion", "navegacion", "vapor", "combustion") {
+		return "la evolución del transporte y su impacto social, económico y tecnológico"
+	}
+	if containsAnyNormalized(normalized, "proxima centauri", "próxima centauri", "exoplaneta", "exoplanetas") {
+		return "la exploración de exoplanetas y el caso de Próxima Centauri"
+	}
+	if containsAnyNormalized(normalized, "logica de programacion", "lógica de programación", "estructura de datos", "estructuras de datos", "arreglo", "algoritmo") {
+		return "fundamentos de lógica de programación y estructuras de datos"
+	}
+	return ""
+}
+
+func crossDocumentRelationSentence(relationSubject string, profiles []crossDocumentProfile) string {
+	if crossDocumentTopicsAreDistinct(profiles) {
+		return "La relación entre " + relationSubject + " no está en el contenido temático directo, sino en que ambos presentan conocimiento técnico-académico organizado: " + crossDocumentAreaContrast(profiles) + "."
+	}
+	return "La relación entre " + relationSubject + " radica en que " + crossDocumentRelationDescription(profiles) + "."
+}
+
+func crossDocumentRelationDescription(profiles []crossDocumentProfile) string {
+	purposes := uniqueProfileValues(profiles, func(profile crossDocumentProfile) string { return profile.Purpose })
+	types := uniqueProfileValues(profiles, func(profile crossDocumentProfile) string { return profile.Type })
+
+	if containsString(types, "data") && containsString(types, "narrative") {
+		return "el primero aporta contexto conceptual, mientras que el segundo representa información estructurada que puede consultarse y analizarse"
+	}
+	if containsString(purposes, "sistema") && containsString(purposes, "datos") {
+		return "uno aporta el contexto del sistema y otro aporta datos que pueden consultarse o contrastarse dentro de ese contexto"
+	}
+	if containsString(purposes, "instrucciones") && containsString(purposes, "datos") {
+		return "uno explica acciones o pasos de trabajo y otro reúne datos sobre los que esas acciones pueden aplicarse"
+	}
+	if containsString(types, "technical") && containsString(types, "narrative") {
+		return "uno presenta el marco explicativo y otro traduce parte de ese marco en componentes o instrucciones técnicas"
+	}
+	if len(purposes) == 1 {
+		return "comparten un propósito de " + purposes[0] + " y abordan información complementaria sobre ese mismo frente"
+	}
+	return "organizan conocimiento especializado desde enfoques complementarios"
+}
+
+func crossDocumentConclusion(profiles []crossDocumentProfile) string {
+	types := uniqueProfileValues(profiles, func(profile crossDocumentProfile) string { return profile.Type })
+	if containsString(types, "data") && containsString(types, "narrative") {
+		return "En conjunto, estos documentos muestran cómo el sistema puede trabajar tanto con contenido narrativo como con datos tabulares."
+	}
+	if crossDocumentTopicsAreDistinct(profiles) {
+		return "En conjunto, muestran cómo AuraDB puede procesar documentos de áreas distintas y responder sobre cada uno manteniendo sus fuentes."
+	}
+	return "En conjunto, estos documentos permiten " + crossDocumentCombinedUse(profiles) + "."
+}
+
+func crossDocumentCombinedUse(profiles []crossDocumentProfile) string {
+	purposes := uniqueProfileValues(profiles, func(profile crossDocumentProfile) string { return profile.Purpose })
+	switch {
+	case containsString(purposes, "sistema") && containsString(purposes, "datos"):
+		return "entender el funcionamiento descrito y revisar datos asociados para responder preguntas con mayor contexto"
+	case containsString(purposes, "instrucciones") && containsString(purposes, "datos"):
+		return "ejecutar o comprender un procedimiento y validar la información estructurada relacionada"
+	case containsString(purposes, "sistema") && containsString(purposes, "instrucciones"):
+		return "comprender el sistema y seguir instrucciones prácticas para usarlo o evaluarlo"
+	case containsString(purposes, "análisis") && containsString(purposes, "datos"):
+		return "combinar interpretación y datos para obtener una lectura más completa"
+	default:
+		return "comparar perspectivas, conectar información complementaria y construir una interpretación conjunta"
+	}
+}
+
+func crossDocumentTopicsAreDistinct(profiles []crossDocumentProfile) bool {
+	if len(profiles) < 2 {
+		return false
+	}
+	for _, profile := range profiles {
+		if profile.Type == "data" {
+			return false
+		}
+	}
+	topics := uniqueProfileValues(profiles, func(profile crossDocumentProfile) string {
+		return service.NormalizeSearchText(profile.Topic)
+	})
+	if len(topics) < 2 {
+		return false
+	}
+	if containsString(topics, "") {
+		return false
+	}
+	return true
+}
+
+func crossDocumentAreaContrast(profiles []crossDocumentProfile) string {
+	areas := uniqueProfileValues(profiles, func(profile crossDocumentProfile) string { return profile.Area })
+	if len(areas) == 0 {
+		return "cada uno desde su área especializada"
+	}
+	if len(areas) == 1 {
+		return "ambos desde " + areas[0]
+	}
+	if len(areas) == 2 {
+		return "uno desde " + areas[0] + " y otro desde " + areas[1]
+	}
+	return "cada uno desde áreas como " + joinNaturalList(areas)
+}
+
+func uniqueProfileValues(profiles []crossDocumentProfile, valueFn func(crossDocumentProfile) string) []string {
+	values := make([]string, 0, len(profiles))
+	seen := make(map[string]bool)
+	for _, profile := range profiles {
+		value := strings.TrimSpace(valueFn(profile))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func groupChunksByDocument(chunks []postgres.SearchResult) map[string][]postgres.SearchResult {
@@ -1880,6 +2852,29 @@ func countUniqueDocumentsInChunks(chunks []postgres.SearchResult) int {
 		seen[documentID] = true
 	}
 	return len(seen)
+}
+
+func chunksPerDocumentLog(chunks []postgres.SearchResult, documentIDs []string) string {
+	counts := make(map[string]int)
+	for _, chunk := range chunks {
+		documentID := strings.TrimSpace(chunk.DocumentID)
+		if documentID == "" {
+			continue
+		}
+		counts[documentID]++
+	}
+	orderedIDs := uniqueStringsPreservingOrder(documentIDs)
+	if len(orderedIDs) == 0 {
+		for documentID := range counts {
+			orderedIDs = append(orderedIDs, documentID)
+		}
+		sort.Strings(orderedIDs)
+	}
+	parts := make([]string, 0, len(orderedIDs))
+	for _, documentID := range orderedIDs {
+		parts = append(parts, documentID+":"+strconv.Itoa(counts[documentID]))
+	}
+	return strings.Join(parts, ",")
 }
 
 func chunksLookLikeSpreadsheet(chunks []postgres.SearchResult) bool {
@@ -3387,6 +4382,79 @@ func selectAskContextChunks(chunks []postgres.SearchResult, queryType string, qu
 	return chunks[:20]
 }
 
+func ensureMultiDocumentCoverage(rankedChunks []postgres.SearchResult, allChunks []postgres.SearchResult, minPerDocument int, maxTotal int) []postgres.SearchResult {
+	if maxTotal <= 0 {
+		maxTotal = askMultiDocMaxK
+	}
+	coverage := selectMultiDocumentCoverageChunks(allChunks, minPerDocument, maxTotal)
+	if len(coverage) == 0 {
+		return limitChunksPerDocument(orderAskChunksByScoreOrPosition(rankedChunks), maxTotal)
+	}
+	combined := make([]postgres.SearchResult, 0, maxTotal)
+	for _, chunk := range coverage {
+		if len(combined) == maxTotal {
+			return combined
+		}
+		if !chunkAlreadySelected(combined, chunk) {
+			combined = append(combined, chunk)
+		}
+	}
+	for _, chunk := range rankedChunks {
+		if len(combined) == maxTotal {
+			break
+		}
+		if !chunkAlreadySelected(combined, chunk) {
+			combined = append(combined, chunk)
+		}
+	}
+	return combined
+}
+
+func selectMultiDocumentCoverageChunks(chunks []postgres.SearchResult, minPerDocument int, maxTotal int) []postgres.SearchResult {
+	if len(chunks) == 0 {
+		return nil
+	}
+	if minPerDocument <= 0 {
+		minPerDocument = askMultiDocMinK
+	}
+	if maxTotal <= 0 {
+		maxTotal = askMultiDocMaxK
+	}
+
+	grouped := groupChunksByDocument(orderAskChunksByScoreOrPosition(chunks))
+	documentIDs := make([]string, 0, len(grouped))
+	for documentID := range grouped {
+		documentIDs = append(documentIDs, documentID)
+	}
+	sort.Strings(documentIDs)
+
+	selected := make([]postgres.SearchResult, 0, maxTotal)
+	for _, documentID := range documentIDs {
+		documentChunks := grouped[documentID]
+		needed := minPerDocument
+		if len(documentChunks) < needed {
+			needed = len(documentChunks)
+		}
+		for i := 0; i < needed && len(selected) < maxTotal; i++ {
+			selected = append(selected, documentChunks[i])
+		}
+	}
+	if len(selected) == maxTotal {
+		return selected
+	}
+
+	for _, chunk := range orderAskChunksByScoreOrPosition(chunks) {
+		if len(selected) == maxTotal {
+			break
+		}
+		if chunkAlreadySelected(selected, chunk) {
+			continue
+		}
+		selected = append(selected, chunk)
+	}
+	return selected
+}
+
 func limitChunksPerDocument(chunks []postgres.SearchResult, limit int) []postgres.SearchResult {
 	if limit <= 0 || len(chunks) <= limit {
 		return chunks
@@ -3563,13 +4631,50 @@ var genericAnswerPhrasePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\s*en conjunto, estos elementos[^.?!]*(?:[.?!]|$)`),
 }
 
+var visibleSpanishAccentReplacements = []struct {
+	pattern *regexp.Regexp
+	value   string
+}{
+	{regexp.MustCompile(`\bevolucion\b`), "evolución"},
+	{regexp.MustCompile(`\bhistorica\b`), "histórica"},
+	{regexp.MustCompile(`\bhistorico\b`), "histórico"},
+	{regexp.MustCompile(`\btecnologias\b`), "tecnologías"},
+	{regexp.MustCompile(`\bmovil\b`), "móvil"},
+	{regexp.MustCompile(`\borganizacion\b`), "organización"},
+}
+
+var crossDocumentPresentationPhraseReplacements = []struct {
+	pattern *regexp.Regexp
+	value   string
+}{
+	{regexp.MustCompile(`(?i)\bdescribe\s+analiza\b`), "analiza"},
+	{regexp.MustCompile(`(?i)\bdescribe\s+contiene\b`), "contiene"},
+	{regexp.MustCompile(`(?i)\bdescribe\s+explica\b`), "explica"},
+}
+
 func cleanDisplayFormatting(text string) string {
+	text = normalizeVisibleSpanishAccents(text)
+	text = cleanCrossDocumentPresentationPhrases(text)
 	text = fileExtensionSpacePattern.ReplaceAllString(text, ".$1")
 	text = auraDBSpacedPattern.ReplaceAllString(text, "AuraDB")
 	text = auraDBCompactPattern.ReplaceAllString(text, "AuraDB")
 	text = visibleMultiSpacePattern.ReplaceAllString(text, " ")
 	text = invertedWordCasePattern.ReplaceAllStringFunc(text, normalizeInvertedWordCase)
 	return strings.TrimSpace(text)
+}
+
+func cleanCrossDocumentPresentationPhrases(text string) string {
+	for _, replacement := range crossDocumentPresentationPhraseReplacements {
+		text = replacement.pattern.ReplaceAllString(text, replacement.value)
+	}
+	return text
+}
+
+func normalizeVisibleSpanishAccents(text string) string {
+	for _, replacement := range visibleSpanishAccentReplacements {
+		text = replacement.pattern.ReplaceAllString(text, replacement.value)
+	}
+	return text
 }
 
 func normalizeInvertedWordCase(word string) string {

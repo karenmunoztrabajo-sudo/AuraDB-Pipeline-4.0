@@ -23,10 +23,12 @@
 
     body {
       margin: 0;
-      background: var(--bg);
+      background: #f7f8fa;
       color: var(--text);
       font-family: Arial, Helvetica, sans-serif;
       line-height: 1.5;
+      height: 100vh;
+      overflow: hidden;
     }
 
     button,
@@ -53,7 +55,7 @@
     }
 
     textarea {
-      min-height: 170px;
+      min-height: 48px;
       resize: vertical;
       line-height: 1.5;
     }
@@ -73,7 +75,7 @@
 
     h1 {
       margin: 0;
-      font-size: 28px;
+      font-size: 22px;
     }
 
     h2 {
@@ -120,8 +122,13 @@
     }
 
     .app {
-      width: min(1320px, calc(100% - 32px));
-      margin: 26px auto 46px;
+      width: min(960px, calc(100% - 24px));
+      height: 100vh;
+      margin: 0 auto;
+      padding: 10px 0 14px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
 
     .topbar {
@@ -129,7 +136,9 @@
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      margin-bottom: 22px;
+      flex: 0 0 auto;
+      height: 40px;
+      margin-bottom: 6px;
     }
 
     .topbar-actions {
@@ -184,35 +193,42 @@
     }
 
     .workspace {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      gap: 22px;
-      align-items: start;
-      transition: grid-template-columns 180ms ease;
+      display: flex;
+      align-items: stretch;
+      min-height: 0;
+      flex: 1 1 auto;
+      overflow: hidden;
     }
 
     .workspace.history-open {
-      grid-template-columns: minmax(0, 1fr) 360px;
-    }
-
-    .main-panel,
-    .history-panel {
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      background: var(--panel);
-      box-shadow: 0 16px 34px rgba(15, 23, 42, 0.06);
+      display: flex;
     }
 
     .main-panel {
       min-width: 0;
-      padding: 24px;
+      width: 100%;
+      padding: 0;
+      height: 100%;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
 
     .history-panel {
+      position: fixed;
+      top: 58px;
+      right: max(12px, calc((100vw - 960px) / 2));
+      z-index: 15;
+      width: min(360px, calc(100vw - 24px));
       min-width: 0;
       padding: 16px;
-      max-height: calc(100vh - 130px);
+      max-height: calc(100vh - 76px);
       overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: 0 18px 42px rgba(15, 23, 42, 0.14);
       transition: opacity 180ms ease, transform 180ms ease;
     }
 
@@ -229,14 +245,12 @@
     }
 
     .intro-block {
-      margin-bottom: 22px;
-      padding-bottom: 20px;
-      border-bottom: 1px solid var(--border);
+      display: none;
     }
 
     .intro-block h2 {
-      margin: 0 0 8px;
-      font-size: 26px;
+      margin: 0 0 2px;
+      font-size: 18px;
       line-height: 1.2;
     }
 
@@ -244,7 +258,7 @@
       max-width: 720px;
       margin: 0;
       color: var(--muted);
-      font-size: 16px;
+      font-size: 13px;
     }
 
     .secondary-button {
@@ -259,10 +273,10 @@
 
     .compact-button {
       width: auto;
-      min-height: 36px;
-      padding: 8px 12px;
-      border-radius: 10px;
-      font-size: 13px;
+      min-height: 32px;
+      padding: 7px 10px;
+      border-radius: 9px;
+      font-size: 12px;
       font-weight: 700;
       line-height: 1.15;
     }
@@ -304,16 +318,38 @@
     }
 
     .composer {
-      margin-top: 16px;
+      flex: 0 0 auto;
+      position: relative;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 8px;
+      padding: 8px;
       border: 1px solid var(--border);
       border-radius: 18px;
       background: #ffffff;
+      overflow: visible;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+    }
+
+    .composer-doc-row {
+      display: flex;
+      align-items: center;
+      min-height: 0;
+      width: 100%;
       overflow: hidden;
-      box-shadow: 0 16px 34px rgba(15, 23, 42, 0.06);
+    }
+
+    .composer-input-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      width: 100%;
     }
 
     .composer-head {
-      display: flex;
+      display: none;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
@@ -344,39 +380,52 @@
     }
 
     .composer textarea {
+      flex: 1 1 auto;
+      width: auto;
+      min-width: 120px;
       border: 0;
-      border-radius: 0;
+      border-radius: 12px;
       display: block;
-      padding: 16px;
+      min-height: 48px;
+      max-height: 120px;
+      padding: 12px 10px;
       font-size: 15px;
+      resize: none;
+      overflow-y: auto;
     }
 
     .composer-footer {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      padding: 10px 12px 12px;
-      border-top: 1px solid var(--border);
-      background: #fbfcfd;
+      gap: 6px;
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      min-height: 0;
     }
 
     .example-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      padding: 0 16px 16px;
+      display: none;
+      flex-wrap: nowrap;
+      gap: 8px;
+      padding: 0 10px 8px;
+      overflow-x: auto;
+      scrollbar-width: thin;
     }
 
     .example-chip {
       width: auto;
-      padding: 8px 12px;
+      flex: 0 0 auto;
+      padding: 6px 10px;
       border: 1px solid #d4e5e0;
       border-radius: 999px;
       background: #f7fbfa;
       color: #29434e;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
+      white-space: nowrap;
     }
 
     .example-chip:hover {
@@ -388,11 +437,12 @@
       min-width: 0;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       color: var(--muted);
-      font-size: 13px;
-      flex-wrap: wrap;
+      font-size: 12px;
+      flex-wrap: nowrap;
       flex: 1 1 auto;
+      overflow: hidden;
     }
 
     .file-area button {
@@ -400,35 +450,72 @@
       white-space: nowrap;
     }
 
+    .attach-button {
+      width: 40px;
+      min-width: 40px;
+      height: 40px;
+      padding: 0;
+      border-radius: 12px;
+      border-color: #b7d8cf;
+      background: var(--soft);
+      color: var(--accent);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0;
+      line-height: 1;
+    }
+
+    .attach-button:hover {
+      border-color: var(--accent);
+      background: #dff2ee;
+      color: var(--accent-strong);
+    }
+
+    .attach-button svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+    }
+
     input[type=file] {
       display: none !important;
     }
 
     .file-status {
-      min-width: 180px;
+      display: none;
+      min-width: 0;
+      max-width: 0;
       color: var(--muted);
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .document-list {
       display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      width: 100%;
+      flex-wrap: nowrap;
+      gap: 4px;
+      width: auto;
+      max-width: 100%;
+      overflow-x: auto;
+      scrollbar-width: thin;
     }
 
     .document-pill {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      max-width: 260px;
+      flex: 0 0 auto;
+      max-width: 170px;
       padding: 4px 7px;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 999px;
       background: #fbfcfd;
       color: var(--text);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
       line-height: 1.2;
     }
@@ -459,14 +546,28 @@
 
     .query-action {
       width: auto;
-      min-width: 108px;
+      min-width: 68px;
       flex: 0 0 auto;
+      align-self: stretch;
     }
 
     .status {
-      margin-top: 10px;
+      margin-top: 0;
       color: var(--muted);
-      font-size: 14px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .composer .status {
+      display: none;
+    }
+
+    .composer .status.error,
+    .composer .status.processing {
+      display: inline-flex;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .status.ready {
@@ -477,6 +578,85 @@
     .status.processing {
       color: #7a5c00;
       font-weight: 700;
+    }
+
+    .chat-thread {
+      flex: 1 1 auto;
+      min-height: 0;
+      max-height: none;
+      overflow-y: auto;
+      padding: 18px 2px 24px;
+      scroll-behavior: smooth;
+    }
+
+    .chat-empty {
+      min-height: 180px;
+      display: grid;
+      place-items: center;
+      color: #98a2b3;
+      text-align: center;
+      font-size: 15px;
+    }
+
+    .chat-message {
+      display: flex;
+      margin: 14px 0;
+    }
+
+    .chat-message.user {
+      justify-content: flex-end;
+    }
+
+    .chat-message.assistant {
+      justify-content: flex-start;
+    }
+
+    .chat-bubble {
+      width: fit-content;
+      max-width: min(760px, 84%);
+      padding: 11px 13px;
+      border: 1px solid #e2e8f0;
+      border-radius: 16px;
+      overflow-wrap: anywhere;
+      box-shadow: none;
+    }
+
+    .chat-message.user .chat-bubble {
+      background: #e4ebf3;
+      color: #17202a;
+      padding: 13px 16px;
+      border-radius: 20px;
+      border-bottom-right-radius: 8px;
+    }
+
+    .chat-message.assistant .chat-bubble {
+      background: #ffffff;
+      color: #20303c;
+      border-bottom-left-radius: 6px;
+    }
+
+    .chat-text {
+      margin: 0;
+      white-space: pre-wrap;
+      line-height: 1.68;
+      font-size: 15px;
+    }
+
+    .typing-cursor {
+      display: inline-block;
+      width: 7px;
+      margin-left: 2px;
+      color: var(--accent);
+      animation: cursorBlink 900ms steps(1) infinite;
+    }
+
+    @keyframes cursorBlink {
+      0%, 45% {
+        opacity: 1;
+      }
+      46%, 100% {
+        opacity: 0;
+      }
     }
 
     .error {
@@ -626,12 +806,12 @@
       width: 100%;
       max-width: none;
       align-self: stretch;
-      margin-top: 20px;
-      padding: 22px 22px 20px;
-      border: 1px solid #dce6e2;
-      border-radius: 14px;
-      background: linear-gradient(180deg, #ffffff 0%, #fbfdfc 100%);
-      box-shadow: 0 14px 34px rgba(8, 117, 104, 0.08);
+      margin-top: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
       overflow: auto;
       animation: answerEnter 220ms ease-out;
     }
@@ -648,7 +828,7 @@
     }
 
     .answer-head {
-      display: flex;
+      display: none;
       align-items: center;
       justify-content: flex-start;
       gap: 12px;
@@ -694,7 +874,7 @@
       overflow-wrap: anywhere;
       color: #20303c;
       font-size: 16px;
-      line-height: 1.72;
+      line-height: 1.82;
     }
 
     .formatted-paragraph:last-child {
@@ -706,7 +886,7 @@
       padding-left: 24px;
       color: #20303c;
       font-size: 16px;
-      line-height: 1.7;
+      line-height: 1.78;
     }
 
     .formatted-list li {
@@ -755,7 +935,7 @@
 
     .answer-actions {
       display: flex;
-      justify-content: flex-end;
+      justify-content: flex-start;
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
@@ -864,29 +1044,32 @@
 
     @media (max-width: 1100px) {
       .workspace.history-open {
-        grid-template-columns: 1fr 320px;
+        display: flex;
       }
     }
 
     @media (max-width: 880px) {
-      .composer-footer {
+      .composer {
         align-items: stretch;
-        flex-direction: column;
+      }
+
+      .composer-footer {
+        align-items: center;
+        flex-direction: row;
+        flex-wrap: nowrap;
       }
 
       .query-action {
-        width: 100%;
+        width: auto;
+      }
+
+      .document-list {
+        max-width: 100%;
       }
     }
 
     @media (max-width: 760px) {
-      .workspace,
-      .workspace.history-open {
-        grid-template-columns: 1fr;
-      }
-
       .history-panel {
-        position: fixed;
         top: 84px;
         right: 16px;
         left: 16px;
@@ -896,6 +1079,32 @@
 
       .history-panel.hidden-desktop {
         display: none;
+      }
+
+      .topbar-actions {
+        gap: 6px;
+      }
+
+      .file-area {
+        gap: 6px;
+      }
+
+      .composer {
+        gap: 6px;
+        padding: 7px;
+      }
+
+      .composer textarea {
+        font-size: 14px;
+        padding-inline: 8px;
+      }
+
+      .document-list {
+        max-width: 100%;
+      }
+
+      .query-action {
+        min-width: 62px;
       }
 
     }
@@ -927,43 +1136,29 @@
 
   <div id="workspace" class="workspace">
     <section class="main-panel" id="queryPanel">
-      <div class="intro-block">
-        <h2>Consulta tu documento</h2>
-        <p>Sube un documento y obtén resúmenes, puntos clave y respuestas.</p>
+      <div id="askResult" class="chat-thread">
+        <div class="chat-empty">Haz una pregunta para iniciar la conversación.</div>
       </div>
 
-      
-
       <div class="composer">
-        <div class="composer-head">
-          <div>
-            <p class="composer-label">Escribe tu consulta</p>
-            <p class="composer-hint">La consulta siempre se ejecuta sobre el documento actual.</p>
-          </div>
-          
-        </div>
-        <textarea id="askQuery" placeholder="Haz una pregunta sobre tu documento..."></textarea>
-        <div class="example-row">
-          <button type="button" class="example-chip" onclick="applyExampleQuestion('Resume este documento')">Resume este documento</button>
-          <button type="button" class="example-chip" onclick="applyExampleQuestion('¿Qué contiene el documento?')">¿Qué contiene el documento?</button>
-          <button type="button" class="example-chip" onclick="applyExampleQuestion('Extrae los puntos clave')">Extrae los puntos clave</button>
-          <button type="button" class="example-chip" onclick="applyExampleQuestion('¿Cuál es el propósito del documento?')">¿Cuál es el propósito del documento?</button>
-          <button type="button" class="example-chip" onclick="applyExampleQuestion('Describe el flujo técnico')">Describe el flujo técnico</button>
-        </div>
-        <div class="composer-footer">
+        <div class="composer-doc-row">
           <div class="file-area">
             <input type="file" id="file" multiple hidden />
-            <button type="button" id="uploadButton" class="secondary-button compact-button">Subir documento</button>
-            <button type="button" id="clearButton" class="secondary-button compact-button">Limpiar</button>
             <span id="currentDocumentName" class="file-status">Sin documento cargado</span>
             <div id="documentList" class="document-list"></div>
             <div id="uploadResult" class="status"></div>
           </div>
-          <button class="query-action compact-button" onclick="askDocument()">Consultar</button>
+        </div>
+        <div class="composer-input-row">
+          <button type="button" id="uploadButton" class="secondary-button compact-button attach-button" title="Adjuntar documento" aria-label="Adjuntar documento">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M21.4 11.6 12 21a6 6 0 0 1-8.5-8.5l9.8-9.8a4 4 0 0 1 5.7 5.7l-9.8 9.8a2 2 0 1 1-2.8-2.8l9.4-9.4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+          </button>
+          <textarea id="askQuery" placeholder="Pregúntame algo sobre tus documentos..."></textarea>
+          <button class="query-action compact-button" onclick="askDocument()">Enviar</button>
         </div>
       </div>
-
-      <div id="askResult"></div>
     </section>
 
     <aside id="historyPanel" class="history-panel hidden-desktop">
@@ -1011,6 +1206,7 @@ let answerFeedbackTimeout = null;
 let confirmAction = null;
 let lastHistoryItems = [];
 let historyPanelOpen = false;
+let chatMessageSeq = 0;
 
 function getAuthToken() {
   try {
@@ -1180,6 +1376,154 @@ function setLoadingState(container, message) {
   container.innerHTML = '<div class="loading-inline"><span>' + message + '</span><span class="loading-dots"><span></span><span></span><span></span></span></div>';
 }
 
+function chatContainer() {
+  return document.getElementById('askResult');
+}
+
+function clearChatEmptyState() {
+  const container = chatContainer();
+  if (!container) return;
+  const empty = container.querySelector('.chat-empty');
+  if (empty) {
+    empty.remove();
+  }
+}
+
+function resetChatThread() {
+  const container = chatContainer();
+  if (!container) return;
+  container.innerHTML = '<div class="chat-empty">Haz una pregunta para iniciar la conversación.</div>';
+}
+
+function scrollChatToBottom() {
+  const container = chatContainer();
+  if (!container) return;
+  requestAnimationFrame(function () {
+    container.scrollTop = container.scrollHeight;
+  });
+}
+
+function appendChatMessage(role, content, options) {
+  const container = chatContainer();
+  if (!container) return "";
+  clearChatEmptyState();
+
+  const id = "chat-message-" + (++chatMessageSeq);
+  const message = document.createElement('div');
+  message.className = "chat-message " + role;
+  message.id = id;
+
+  const bubble = document.createElement('div');
+  bubble.className = "chat-bubble";
+
+  if (options && options.loading) {
+    bubble.innerHTML = '<div class="loading-inline"><span>Escribiendo</span><span class="loading-dots"><span></span><span></span><span></span></span></div>';
+  } else if (role === "assistant") {
+    bubble.appendChild(renderAssistantContent(content, options && options.question));
+  } else {
+    const text = document.createElement('p');
+    text.className = "chat-text";
+    text.textContent = content || "";
+    bubble.appendChild(text);
+  }
+
+  message.appendChild(bubble);
+  container.appendChild(message);
+  scrollChatToBottom();
+  return id;
+}
+
+function replaceAssistantMessage(messageId, answer, question) {
+  const message = document.getElementById(messageId);
+  if (!message) {
+    appendChatMessage("assistant", answer, { question: question });
+    return;
+  }
+  const bubble = message.querySelector('.chat-bubble');
+  if (!bubble) return;
+  bubble.innerHTML = "";
+  bubble.appendChild(renderAssistantContent(answer, question));
+  scrollChatToBottom();
+}
+
+function delay(ms) {
+  return new Promise(function (resolve) {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function replaceAssistantMessageTyping(messageId, answer, question) {
+  const message = document.getElementById(messageId);
+  if (!message) {
+    appendChatMessage("assistant", answer, { question: question });
+    return;
+  }
+  const bubble = message.querySelector('.chat-bubble');
+  if (!bubble) return;
+
+  const finalAnswer = cleanDisplayedSources(answer || "");
+  bubble.innerHTML = "";
+
+  const text = document.createElement('p');
+  text.className = "chat-text";
+  const textNode = document.createTextNode("");
+  const cursor = document.createElement('span');
+  cursor.className = "typing-cursor";
+  cursor.textContent = "|";
+  text.appendChild(textNode);
+  text.appendChild(cursor);
+  bubble.appendChild(text);
+
+  const chunkSize = finalAnswer.length > 2500 ? 12 : 8;
+  const delayMs = finalAnswer.length > 2500 ? 8 : 12;
+
+  for (let index = 0; index < finalAnswer.length; index += chunkSize) {
+    textNode.nodeValue += finalAnswer.slice(index, index + chunkSize);
+    scrollChatToBottom();
+    await delay(delayMs);
+  }
+
+  bubble.innerHTML = "";
+  bubble.appendChild(renderAssistantContent(finalAnswer, question));
+  scrollChatToBottom();
+}
+
+function renderAssistantContent(answer, question) {
+  answer = cleanDisplayedSources(answer || "");
+  const wrapper = document.createElement('div');
+  wrapper.className = "answer-panel";
+  wrapper.appendChild(buildFormattedAnswer(answer, question));
+
+  const actions = document.createElement('div');
+  actions.className = "answer-actions";
+
+  const copyButton = document.createElement('button');
+  copyButton.type = "button";
+  copyButton.className = "answer-action";
+  copyButton.textContent = "Copiar";
+  actions.appendChild(copyButton);
+
+  const exportButton = document.createElement('button');
+  exportButton.type = "button";
+  exportButton.className = "answer-action";
+  exportButton.textContent = "Exportar";
+  actions.appendChild(exportButton);
+
+  const feedback = document.createElement('div');
+  feedback.className = "answer-feedback";
+
+  copyButton.onclick = function () {
+    copyAnswer(answer, feedback);
+  };
+  exportButton.onclick = function () {
+    exportAnswer(answer, question, feedback);
+  };
+
+  wrapper.appendChild(actions);
+  wrapper.appendChild(feedback);
+  return wrapper;
+}
+
 function formatHistoryDate(value) {
   if (!value) {
     return "";
@@ -1309,8 +1653,7 @@ function initializeFreshAppState() {
   const query = document.getElementById("askQuery");
   if (query) query.value = "";
 
-  const answer = document.getElementById("askResult");
-  if (answer) answer.innerHTML = "";
+  resetChatThread();
 
   clearPersistedDocumentState();
   clearPersistedQueryState();
@@ -1320,7 +1663,7 @@ function initializeFreshAppState() {
 
 function clearDocumentState() {
   saveCurrentDocument("", "");
-  document.getElementById('askResult').innerHTML = "";
+  resetChatThread();
   clearPersistedDocumentState();
   clearPersistedQueryState();
   persistLastAnswer("");
@@ -1331,7 +1674,7 @@ function resetUploadDocumentState() {
   currentDocumentName = "";
   loadedDocuments = [];
   saveCurrentDocument("", "");
-  document.getElementById('askResult').innerHTML = "";
+  resetChatThread();
   persistLastAnswer("");
 }
 
@@ -1354,7 +1697,7 @@ function persistLastAnswer(answerText) {
 }
 
 function restoreLastAnswer() {
-  document.getElementById('askResult').innerHTML = "";
+  resetChatThread();
 }
 
 function clearPersistedQueryState() {
@@ -1401,8 +1744,8 @@ function applyExampleQuestion(question) {
   input.focus();
 }
 
-function showAnswerFeedback(message) {
-  const feedback = document.getElementById('answerFeedback');
+function showAnswerFeedback(message, target) {
+  const feedback = target || document.getElementById('answerFeedback');
   if (!feedback) {
     return;
   }
@@ -1412,7 +1755,7 @@ function showAnswerFeedback(message) {
   }
   if (message) {
     answerFeedbackTimeout = setTimeout(function () {
-      const currentFeedback = document.getElementById('answerFeedback');
+      const currentFeedback = target || document.getElementById('answerFeedback');
       if (currentFeedback) {
         currentFeedback.textContent = "";
       }
@@ -1420,21 +1763,37 @@ function showAnswerFeedback(message) {
   }
 }
 
-async function copyAnswer() {
-  const answerText = sessionStorage.getItem(LAST_ANSWER_TEXT_KEY) || "";
+async function copyAnswer(answerText, feedbackTarget) {
+  answerText = answerText || sessionStorage.getItem(LAST_ANSWER_TEXT_KEY) || "";
   if (!answerText) {
     return;
   }
   try {
     await navigator.clipboard.writeText(answerText);
-    showAnswerFeedback("Copiado");
+    showAnswerFeedback("Copiado", feedbackTarget);
   } catch (err) {
-    showAnswerFeedback("");
+    showAnswerFeedback("", feedbackTarget);
   }
 }
 
+function exportAnswer(answerText, question, feedbackTarget) {
+  answerText = answerText || sessionStorage.getItem(LAST_ANSWER_TEXT_KEY) || "";
+  if (!answerText) return;
+  const content = (question ? question + "\n\n" : "") + answerText;
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = "auradb-respuesta.txt";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  showAnswerFeedback("Exportado", feedbackTarget);
+}
+
 function clearAnswer() {
-  document.getElementById('askResult').innerHTML = "";
+  resetChatThread();
   persistLastAnswer("");
   showAnswerFeedback("");
 }
@@ -1479,8 +1838,89 @@ function stripTechnicalHeading(text) {
 }
 
 function cleanAnswerText(text) {
-  return String(text || "")
+  return cleanDisplayedSources(text)
     .replace(/\r/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function sourceDisplayNameForId(id) {
+  const normalizedId = String(id || "").trim();
+  if (!normalizedId) return "";
+  const found = loadedDocuments.find(function (documentInfo) {
+    return String(documentInfo.id || "").trim() === normalizedId;
+  });
+  return found && found.name ? found.name : "";
+}
+
+function fallbackSourceNames() {
+  return loadedDocuments
+    .map(function (documentInfo) { return documentInfo.name || ""; })
+    .filter(Boolean);
+}
+
+function cleanSourceLine(line) {
+  let cleaned = String(line || "");
+  const original = cleaned;
+  const sheetMatch = cleaned.match(/(?:hoja|sheet)\s*:?\s*([A-Za-z0-9_ -]+)/i);
+  const sheetName = sheetMatch ? sheetMatch[1].trim() : "";
+
+  loadedDocuments.forEach(function (documentInfo) {
+    const id = String(documentInfo.id || "").trim();
+    if (!id || !documentInfo.name) return;
+    cleaned = cleaned.split(id).join(documentInfo.name);
+  });
+
+  cleaned = cleaned
+    .replace(/\bchunk[_\s-]*id\s*[:=]?\s*[A-Za-z0-9_-]+/gi, "")
+    .replace(/\bchunk\s*[:#-]?\s*[A-Za-z0-9_-]+/gi, "")
+    .replace(/\bdocument[_\s-]*id\s*[:=]?\s*/gi, "")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, "")
+    .replace(/\s*[\/|]\s*(?=$)/g, "")
+    .replace(/:\s*[,;]\s*/g, ": ")
+    .replace(/\s*[,;]\s*(?=$)/g, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,;])/g, "$1")
+    .trim();
+
+  if (/^fuentes?\s*:?\s*$/i.test(cleaned) || /^\[[A-Z]\]\s*$/i.test(cleaned)) {
+    const names = fallbackSourceNames();
+    if (names.length === 1) {
+      cleaned = "Fuente: " + names[0];
+    } else if (names.length > 1) {
+      cleaned = "Fuente: " + names.join("; ");
+    }
+  }
+
+  if (sheetName && !/hoja\s*:/i.test(cleaned)) {
+    cleaned += " — Hoja: " + sheetName;
+  }
+
+  return cleaned || original;
+}
+
+function cleanDisplayedSources(text) {
+  let inSources = false;
+  return String(text || "")
+    .split("\n")
+    .map(function (line) {
+      const isSourceHeader = /^\s*(?:fuentes?|(?:\[[A-Z]\]\s*)?fuente)\s*:?/i.test(line);
+      const isSourceItem = inSources && /^\s*(?:\[[A-Z]\]\s*)?[^:]{0,140}(?:\.pdf|\.xlsx|\.xls|\.csv|\.docx|\.txt|\b[0-9a-f]{8}-)/i.test(line);
+      const hasTechnicalSourceToken = /\bchunk[_\s-]*id\b/i.test(line) || /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i.test(line);
+      if (isSourceHeader) {
+        inSources = true;
+        return cleanSourceLine(line);
+      }
+      if (inSources && !line.trim()) {
+        inSources = false;
+        return line;
+      }
+      if (isSourceItem || hasTechnicalSourceToken) {
+        return cleanSourceLine(line);
+      }
+      return line;
+    })
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -1658,76 +2098,11 @@ function buildFormattedAnswer(answer, question) {
 }
 
 function renderAnswer(answer, question) {
-  const container = document.getElementById('askResult');
-  container.innerHTML = "";
   if (!answer) {
     return;
   }
-
-  const wrapper = document.createElement('div');
-  wrapper.className = "answer-panel";
-
-  const answerHead = document.createElement('div');
-  answerHead.className = "answer-head";
-
-  const answerTitle = document.createElement('h3');
-  answerTitle.className = "answer-title";
-  answerTitle.textContent = "Respuesta generada";
-  answerHead.appendChild(answerTitle);
-  wrapper.appendChild(answerHead);
-
-  const questionSection = document.createElement('div');
-  questionSection.className = "answer-section";
-
-  const questionLabel = document.createElement('p');
-  questionLabel.className = "answer-label";
-  questionLabel.textContent = "Pregunta";
-  questionSection.appendChild(questionLabel);
-
-  const questionText = document.createElement('p');
-  questionText.className = "answer-question";
-  questionText.textContent = question || document.getElementById('askQuery').value.trim() || "Consulta al documento";
-  questionSection.appendChild(questionText);
-  wrapper.appendChild(questionSection);
-
-  const responseSection = document.createElement('div');
-  responseSection.className = "answer-section";
-
-  const responseLabel = document.createElement('p');
-  responseLabel.className = "answer-label";
-  responseLabel.textContent = "Respuesta";
-  responseSection.appendChild(responseLabel);
-
-  responseSection.appendChild(buildFormattedAnswer(answer, question));
-  wrapper.appendChild(responseSection);
-
-  const actions = document.createElement('div');
-  actions.className = "answer-actions";
-
-  [
-    ["Copiar respuesta", copyAnswer],
-    ["Limpiar", clearAnswer],
-    ["Nueva consulta", newQuery]
-  ].forEach(function (entry) {
-    const button = document.createElement('button');
-    button.type = "button";
-    button.className = "answer-action";
-    button.textContent = entry[0];
-    button.onclick = entry[1];
-    actions.appendChild(button);
-  });
-
-  wrapper.appendChild(actions);
-
-  const feedback = document.createElement('div');
-  feedback.className = "answer-feedback";
-  feedback.id = "answerFeedback";
-  wrapper.appendChild(feedback);
-
-  container.appendChild(wrapper);
-  wrapper.scrollIntoView({
-    behavior: "smooth",
-    block: "start"
+  appendChatMessage("assistant", answer, {
+    question: question || document.getElementById('askQuery').value.trim()
   });
 }
 
@@ -1943,8 +2318,7 @@ function clearDocument() {
   renderCurrentDocumentName();
   setUploadMessage("Sin documento cargado.", false);
 
-  const answer = document.getElementById("askResult");
-  if (answer) answer.innerHTML = "";
+  resetChatThread();
 }
 
 function renderCurrentDocumentName() {
@@ -1958,7 +2332,7 @@ function renderCurrentDocumentName() {
     return;
   }
 
-  container.textContent = loadedDocuments.length === 1 ? loadedDocuments[0].name : loadedDocuments.length + " documentos cargados";
+  container.textContent = loadedDocuments.length === 1 ? loadedDocuments[0].name : loadedDocuments.length + " documentos listos";
 
   if (!list) return;
   list.innerHTML = "";
@@ -2002,23 +2376,25 @@ async function searchDocs() {
 
 async function askDocument() {
   const container = document.getElementById('askResult');
-  setLoadingState(container, "Analizando documento...");
-  persistLastAnswer("");
-
+  let loadingMessageId = "";
+  let question = "";
   try {
-    const question = document.getElementById('askQuery').value.trim();
+    question = document.getElementById('askQuery').value.trim();
     const documentIds = selectedDocumentIds();
     const activeDocumentId = (currentDocumentId || "").trim();
     if (!question) {
-      setMessage(container, "Escribe una consulta.", "error");
+      appendChatMessage("assistant", "Escribe una consulta.");
       return;
     }
     if (!documentIds.length) {
-      setMessage(container, "Sube un documento antes de consultar.", "error");
+      appendChatMessage("assistant", "Adjunta un archivo para empezar.");
       return;
     }
 
     persistQueryState();
+    persistLastAnswer("");
+    appendChatMessage("user", question);
+    loadingMessageId = appendChatMessage("assistant", "", { loading: true });
     console.log("active_document_ids_before_ask", documentIds);
     console.log("ask_document_ids=" + documentIds.join(","));
 
@@ -2039,17 +2415,19 @@ async function askDocument() {
     });
 
     if (!res.ok) {
-      renderAnswer("No se encontró información suficiente en el documento para responder esa consulta.", question);
+      await replaceAssistantMessageTyping(loadingMessageId, "No se encontró información suficiente en el documento para responder esa consulta.", question);
       return;
     }
 
     const data = await res.json();
-    renderAnswer(data.answer || "", question);
+    await replaceAssistantMessageTyping(loadingMessageId, data.answer || "", question);
     persistLastAnswer(data.answer || "");
+    const queryInput = document.getElementById('askQuery');
+    queryInput.value = "";
+    queryInput.style.height = "48px";
     loadAskHistory();
   } catch (err) {
-    const question = document.getElementById('askQuery').value.trim();
-    renderAnswer("No se encontró información suficiente en el documento para responder esa consulta.", question);
+    await replaceAssistantMessageTyping(loadingMessageId, "No se encontró información suficiente en el documento para responder esa consulta.", question);
   }
 }
 
@@ -2262,6 +2640,8 @@ document.getElementById('askQuery').addEventListener('keydown', function (event)
 });
 
 document.getElementById('askQuery').addEventListener('input', function () {
+  this.style.height = "48px";
+  this.style.height = Math.min(this.scrollHeight, 120) + "px";
   persistQueryState();
 });
 
@@ -2271,7 +2651,10 @@ document.getElementById("uploadButton").addEventListener("click", function () {
 
 document.getElementById("file").addEventListener("change", uploadSelectedFile);
 
-document.getElementById("clearButton").addEventListener("click", clearDocument);
+const clearButton = document.getElementById("clearButton");
+if (clearButton) {
+  clearButton.addEventListener("click", clearDocument);
+}
 
 document.addEventListener("mousedown", handleHistoryClickOutside);
 
