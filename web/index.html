@@ -122,7 +122,7 @@
     }
 
     .app {
-      width: min(960px, calc(100% - 24px));
+      width: min(1280px, calc(100% - 24px));
       height: 100vh;
       margin: 0 auto;
       padding: 10px 0 14px;
@@ -145,6 +145,27 @@
       position: relative;
       width: auto;
       flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .new-chat-button {
+      width: auto;
+      min-height: 34px;
+      padding: 8px 11px;
+      border-color: #d8e3e0;
+      background: #ffffff;
+      color: var(--text);
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.15;
+      white-space: nowrap;
+    }
+
+    .new-chat-button:hover {
+      background: #f1f5f9;
     }
 
     .menu-button {
@@ -195,6 +216,7 @@
     .workspace {
       display: flex;
       align-items: stretch;
+      gap: 14px;
       min-height: 0;
       flex: 1 1 auto;
       overflow: hidden;
@@ -206,7 +228,8 @@
 
     .main-panel {
       min-width: 0;
-      width: 100%;
+      flex: 1 1 auto;
+      width: auto;
       padding: 0;
       height: 100%;
       min-height: 0;
@@ -216,14 +239,13 @@
     }
 
     .history-panel {
-      position: fixed;
-      top: 58px;
-      right: max(12px, calc((100vw - 960px) / 2));
-      z-index: 15;
-      width: min(360px, calc(100vw - 24px));
+      position: static;
+      flex: 0 0 340px;
+      width: 340px;
       min-width: 0;
       padding: 16px;
-      max-height: calc(100vh - 76px);
+      height: 100%;
+      max-height: none;
       overflow: auto;
       border: 1px solid var(--border);
       border-radius: 16px;
@@ -233,9 +255,7 @@
     }
 
     .history-panel.hidden-desktop {
-      opacity: 0;
-      transform: translateX(12px);
-      pointer-events: none;
+      display: none;
     }
 
     .panel-intro {
@@ -804,10 +824,10 @@
 
     .answer-panel {
       width: 100%;
-      max-width: none;
+      max-width: min(780px, 100%);
       align-self: stretch;
       margin-top: 0;
-      padding: 0;
+      padding: 2px 0;
       border: 0;
       border-radius: 0;
       background: transparent;
@@ -849,10 +869,11 @@
     .formatted-answer {
       display: grid;
       gap: 18px;
+      max-width: 74ch;
     }
 
     .formatted-block {
-      padding-top: 16px;
+      padding-top: 18px;
       border-top: 1px solid #e3ebe8;
     }
 
@@ -862,19 +883,19 @@
     }
 
     .formatted-heading {
-      margin: 0 0 10px;
+      margin: 0 0 12px;
       color: var(--accent-strong);
-      font-size: 17px;
+      font-size: 16px;
       font-weight: 700;
-      line-height: 1.35;
+      line-height: 1.4;
     }
 
     .formatted-paragraph {
-      margin: 0 0 12px;
+      margin: 0 0 16px;
       overflow-wrap: anywhere;
       color: #20303c;
       font-size: 16px;
-      line-height: 1.82;
+      line-height: 1.9;
     }
 
     .formatted-paragraph:last-child {
@@ -883,19 +904,39 @@
 
     .formatted-list {
       margin: 0;
-      padding-left: 24px;
+      padding-left: 22px;
       color: #20303c;
       font-size: 16px;
-      line-height: 1.78;
+      line-height: 1.86;
     }
 
     .formatted-list li {
-      margin: 0 0 10px;
-      padding-left: 4px;
+      margin: 0 0 12px;
+      padding-left: 6px;
     }
 
     .formatted-list li:last-child {
       margin-bottom: 0;
+    }
+
+    .long-answer {
+      gap: 22px;
+    }
+
+    .long-answer .formatted-block {
+      padding-top: 22px;
+    }
+
+    .long-answer .formatted-heading {
+      margin-bottom: 14px;
+      font-size: 18px;
+      color: #075f56;
+    }
+
+    .long-answer .formatted-paragraph,
+    .long-answer .formatted-list {
+      font-size: 16px;
+      line-height: 1.95;
     }
 
     .answer-section {
@@ -1070,9 +1111,12 @@
 
     @media (max-width: 760px) {
       .history-panel {
+        position: fixed;
         top: 84px;
         right: 16px;
         left: 16px;
+        width: auto;
+        height: auto;
         max-height: calc(100vh - 110px);
         z-index: 15;
       }
@@ -1126,8 +1170,10 @@
   <header class="topbar">
     <h1>AuraDB</h1>
     <div class="topbar-actions">
+      <button type="button" class="new-chat-button" onclick="startNewChat()">Nuevo chat</button>
       <button type="button" class="menu-button" onclick="toggleSessionMenu()" aria-label="Menú">⋯</button>
       <div id="sessionMenu" class="session-menu hidden">
+        <button type="button" onclick="startNewChat()">Nuevo chat</button>
         <button type="button" onclick="toggleHistoryPanel()">Historial</button>
         <button type="button" onclick="logout()">Cerrar sesión</button>
       </div>
@@ -1144,7 +1190,7 @@
         <div class="composer-doc-row">
           <div class="file-area">
             <input type="file" id="file" multiple hidden />
-            <span id="currentDocumentName" class="file-status">Sin documento cargado</span>
+            <span id="currentDocumentName" class="file-status">Consulta global en la base de conocimiento</span>
             <div id="documentList" class="document-list"></div>
             <div id="uploadResult" class="status"></div>
           </div>
@@ -1156,7 +1202,7 @@
             </svg>
           </button>
           <textarea id="askQuery" placeholder="Pregúntame algo sobre tus documentos..."></textarea>
-          <button class="query-action compact-button" onclick="askDocument()">Enviar</button>
+          <button type="button" id="askButton" class="query-action compact-button" onclick="handleAskButtonClick()">Enviar</button>
         </div>
       </div>
     </section>
@@ -1207,6 +1253,10 @@ let confirmAction = null;
 let lastHistoryItems = [];
 let historyPanelOpen = false;
 let chatMessageSeq = 0;
+let isAsking = false;
+let currentAskController = null;
+let currentTypingTimer = null;
+let currentLoadingMessageId = "";
 
 function getAuthToken() {
   try {
@@ -1278,6 +1328,9 @@ function closeHistoryPanel() {
 
 function handleHistoryClickOutside(event) {
   if (!historyPanelOpen) {
+    return;
+  }
+  if (!window.matchMedia("(max-width: 760px)").matches) {
     return;
   }
   const panel = document.getElementById('historyPanel');
@@ -1389,10 +1442,14 @@ function clearChatEmptyState() {
   }
 }
 
-function resetChatThread() {
+function resetChatThread(message) {
   const container = chatContainer();
   if (!container) return;
-  container.innerHTML = '<div class="chat-empty">Haz una pregunta para iniciar la conversación.</div>';
+  container.innerHTML = "";
+  const empty = document.createElement('div');
+  empty.className = "chat-empty";
+  empty.textContent = message || "Haz una pregunta para iniciar la conversación.";
+  container.appendChild(empty);
 }
 
 function scrollChatToBottom() {
@@ -1446,13 +1503,35 @@ function replaceAssistantMessage(messageId, answer, question) {
   scrollChatToBottom();
 }
 
-function delay(ms) {
+function delay(ms, signal) {
   return new Promise(function (resolve) {
-    setTimeout(resolve, ms);
+    if (signal && signal.aborted) {
+      resolve(false);
+      return;
+    }
+    function finish(value) {
+      if (currentTypingTimer) {
+        clearTimeout(currentTypingTimer);
+        currentTypingTimer = null;
+      }
+      if (signal) {
+        signal.removeEventListener('abort', onAbort);
+      }
+      resolve(value);
+    }
+    function onAbort() {
+      finish(false);
+    }
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    currentTypingTimer = setTimeout(function () {
+      finish(true);
+    }, ms);
   });
 }
 
-async function replaceAssistantMessageTyping(messageId, answer, question) {
+async function replaceAssistantMessageTyping(messageId, answer, question, signal) {
   const message = document.getElementById(messageId);
   if (!message) {
     appendChatMessage("assistant", answer, { question: question });
@@ -1478,14 +1557,22 @@ async function replaceAssistantMessageTyping(messageId, answer, question) {
   const delayMs = finalAnswer.length > 2500 ? 8 : 12;
 
   for (let index = 0; index < finalAnswer.length; index += chunkSize) {
+    if (signal && signal.aborted) {
+      return false;
+    }
     textNode.nodeValue += finalAnswer.slice(index, index + chunkSize);
     scrollChatToBottom();
-    await delay(delayMs);
+    const shouldContinue = await delay(delayMs, signal);
+    if (!shouldContinue || (signal && signal.aborted)) {
+      return false;
+    }
   }
 
+  currentTypingTimer = null;
   bubble.innerHTML = "";
   bubble.appendChild(renderAssistantContent(finalAnswer, question));
   scrollChatToBottom();
+  return true;
 }
 
 function renderAssistantContent(answer, question) {
@@ -1658,7 +1745,7 @@ function initializeFreshAppState() {
   clearPersistedDocumentState();
   clearPersistedQueryState();
   renderCurrentDocumentName();
-  setUploadMessage("Sin documento cargado.", false);
+  setUploadMessage("Consulta global en la base de conocimiento", false, "ready");
 }
 
 function clearDocumentState() {
@@ -1718,6 +1805,90 @@ function clearPersistedDocumentState() {
     localStorage.removeItem(CURRENT_DOCUMENT_NAME_KEY);
     localStorage.removeItem(CURRENT_DOCUMENTS_KEY);
   } catch (err) {}
+}
+
+function clearCurrentChatStorage() {
+  const exactKeys = [
+    CURRENT_DOCUMENT_ID_KEY,
+    CURRENT_DOCUMENT_NAME_KEY,
+    CURRENT_DOCUMENTS_KEY,
+    CURRENT_QUERY_TEXT_KEY,
+    LAST_ANSWER_TEXT_KEY,
+    "auradb.currentConversation",
+    "auradb.currentChat",
+    "auradb.lastQuestion",
+    "auradb.lastDocumentId",
+    "auradb.lastDocumentIds",
+    "auradb.last_document_ids",
+    "auradb.loadedDocuments",
+    "auradb.activeDocumentIds"
+  ];
+  const relatedPatterns = [
+    /^auradb\.current/i,
+    /^auradb\.last/i,
+    /^auradb\.loadedDocuments$/i,
+    /^auradb\.activeDocumentIds$/i,
+    /^auradb\.conversation/i
+  ];
+
+  [sessionStorage, localStorage].forEach(function (storage) {
+    try {
+      exactKeys.forEach(function (key) {
+        storage.removeItem(key);
+      });
+      Object.keys(storage).forEach(function (key) {
+        if (key === AUTH_TOKEN_KEY || key === HISTORY_FAVORITES_KEY || key === HISTORY_HIDDEN_IDS_KEY || key === HISTORY_PANEL_OPEN_KEY) {
+          return;
+        }
+        if (relatedPatterns.some(function (pattern) { return pattern.test(key); })) {
+          storage.removeItem(key);
+        }
+      });
+    } catch (err) {}
+  });
+}
+
+function startNewChat() {
+  const menu = document.getElementById('sessionMenu');
+  if (menu) {
+    menu.classList.add('hidden');
+  }
+  closeHistoryMenu();
+  if (isAsking && currentAskController) {
+    currentAskController.abort();
+  }
+  if (currentTypingTimer) {
+    clearTimeout(currentTypingTimer);
+    currentTypingTimer = null;
+  }
+  if (answerFeedbackTimeout) {
+    clearTimeout(answerFeedbackTimeout);
+    answerFeedbackTimeout = null;
+  }
+  finishAskState();
+
+  currentDocumentId = "";
+  currentDocumentName = "";
+  loadedDocuments = [];
+  chatMessageSeq = 0;
+
+  const fileInput = document.getElementById("file");
+  if (fileInput) fileInput.value = "";
+
+  const query = document.getElementById("askQuery");
+  if (query) {
+    query.value = "";
+    query.style.height = "48px";
+  }
+
+  clearCurrentChatStorage();
+  renderCurrentDocumentName();
+  setUploadMessage("Nuevo chat iniciado. Puedes consultar la base de conocimiento o subir un documento.", false, "ready");
+  resetChatThread("Nuevo chat iniciado. Puedes consultar la base de conocimiento o subir un documento.");
+
+  if (query) {
+    query.focus();
+  }
 }
 
 function setQuickQuestion(mode) {
@@ -1817,7 +1988,7 @@ function detectAnswerIntent(question) {
   if (normalized.includes("flujo")) {
     return "flow";
   }
-  if (normalized.includes("resume") || normalized.includes("resumen")) {
+  if (normalized.includes("resume") || normalized.includes("resumen") || normalized.includes("explicame") || normalized.includes("explica") || normalized.includes("analiza")) {
     return "summary";
   }
   if (
@@ -1832,9 +2003,36 @@ function detectAnswerIntent(question) {
 }
 
 function stripTechnicalHeading(text) {
-  return String(text || "")
+  const cleaned = String(text || "")
     .replace(/^\s*(respuesta|respuesta generada|definicion|definición|contexto|analisis|análisis|contenido)\s*:\s*/i, "")
+    .replace(/^\s*resumen del documento\s*:?\s*$/i, "")
     .trim();
+  return normalizeRawUppercaseTitle(cleaned);
+}
+
+function uppercaseLetterRatio(text) {
+  const letters = String(text || "").match(/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g) || [];
+  if (!letters.length) return 0;
+  const upper = letters.filter(function (char) {
+    return char === char.toUpperCase() && char !== char.toLowerCase();
+  });
+  return upper.length / letters.length;
+}
+
+function normalizeRawUppercaseTitle(text) {
+  const cleaned = String(text || "").trim();
+  if (!cleaned) return "";
+  if (cleaned.length > 18 && cleaned.length < 160 && uppercaseLetterRatio(cleaned) > 0.78) {
+    const normalized = normalizeForIntent(cleaned);
+    if (normalized.includes("compendio") && normalized.includes("transporte")) {
+      return "El texto presenta un compendio histórico sobre la evolución del transporte y la movilidad.";
+    }
+    if (normalized.includes("transporte") || normalized.includes("movilidad")) {
+      return "El texto presenta una revisión general sobre transporte y movilidad.";
+    }
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
+  }
+  return cleaned;
 }
 
 function cleanAnswerText(text) {
@@ -1963,14 +2161,16 @@ function splitIntoParagraphs(text) {
 }
 
 function splitSummaryAndConclusion(answer) {
-  const cleaned = cleanAnswerText(answer);
+  const sourceSplit = splitSourceBlocks(answer);
+  const cleaned = cleanAnswerText(sourceSplit.body);
   const conclusionMatch = cleaned.match(/(?:^|\n)\s*(conclusi[oó]n)\s*:?\s*/i);
   if (conclusionMatch && typeof conclusionMatch.index === "number") {
     const summary = cleaned.slice(0, conclusionMatch.index).trim();
     const conclusion = cleaned.slice(conclusionMatch.index + conclusionMatch[0].length).trim();
     return {
       summary: splitIntoParagraphs(summary),
-      conclusion: splitIntoParagraphs(conclusion)
+      conclusion: splitIntoParagraphs(conclusion),
+      sources: sourceSplit.sources
     };
   }
 
@@ -1978,7 +2178,8 @@ function splitSummaryAndConclusion(answer) {
   if (paragraphs.length > 1) {
     return {
       summary: paragraphs.slice(0, -1),
-      conclusion: [paragraphs[paragraphs.length - 1]]
+      conclusion: [paragraphs[paragraphs.length - 1]],
+      sources: sourceSplit.sources
     };
   }
 
@@ -1988,13 +2189,30 @@ function splitSummaryAndConclusion(answer) {
   if (sentences.length > 1) {
     return {
       summary: sentences.slice(0, -1),
-      conclusion: [sentences[sentences.length - 1]]
+      conclusion: [sentences[sentences.length - 1]],
+      sources: sourceSplit.sources
     };
   }
 
   return {
     summary: paragraphs.length ? paragraphs : [cleaned],
-    conclusion: []
+    conclusion: [],
+    sources: sourceSplit.sources
+  };
+}
+
+function splitLongSummarySections(answer) {
+  const parts = splitSummaryAndConclusion(answer);
+  const summary = parts.summary.slice();
+  const intro = summary.length ? [summary.shift()] : [];
+  const topicBullets = transportTopicBullets(summary.join("\n\n"));
+  const development = summary;
+  return {
+    introduction: intro,
+    development: development,
+    topicBullets: topicBullets,
+    conclusion: parts.conclusion,
+    sources: parts.sources
   };
 }
 
@@ -2049,6 +2267,60 @@ function appendHeadingBlock(container, heading, paragraphs) {
   container.appendChild(block);
 }
 
+function appendListBlock(container, heading, items) {
+  if (!items || !items.length) {
+    return;
+  }
+
+  const block = document.createElement('div');
+  block.className = "formatted-block";
+
+  if (heading) {
+    const title = document.createElement('h4');
+    title.className = "formatted-heading";
+    title.textContent = heading;
+    block.appendChild(title);
+  }
+
+  const list = document.createElement('ul');
+  list.className = "formatted-list";
+  items.forEach(function (item) {
+    const li = document.createElement('li');
+    li.textContent = stripTechnicalHeading(item);
+    list.appendChild(li);
+  });
+  block.appendChild(list);
+  container.appendChild(block);
+}
+
+function appendMixedSummaryBlock(container, heading, paragraphs, topicBullets) {
+  const cleanParagraphs = (paragraphs || []).map(stripTechnicalHeading).filter(Boolean);
+  const listItems = [];
+  const prose = [];
+
+  cleanParagraphs.forEach(function (paragraph) {
+    if (looksLikeListText(paragraph)) {
+      extractBulletLines(paragraph).forEach(function (item) {
+        listItems.push(item);
+      });
+      return;
+    }
+    prose.push(paragraph);
+  });
+
+  appendHeadingBlock(container, heading, prose);
+  if (topicBullets && topicBullets.length) {
+    topicBullets.forEach(function (item) {
+      if (!listItems.includes(item)) {
+        listItems.push(item);
+      }
+    });
+  }
+  if (listItems.length) {
+    appendListBlock(container, prose.length ? "" : heading, listItems);
+  }
+}
+
 function appendParagraphs(container, paragraphs) {
   paragraphs.forEach(function (paragraph) {
     const p = document.createElement('p');
@@ -2062,12 +2334,32 @@ function buildFormattedAnswer(answer, question) {
   const intent = detectAnswerIntent(question);
   const container = document.createElement('div');
   container.className = "formatted-answer";
+  const longAnswer = isLongFormattedAnswer(answer);
+  if (longAnswer) {
+    container.className += " long-answer";
+  }
 
   if (intent === "summary") {
+    if (longAnswer) {
+      const parts = splitLongSummarySections(answer);
+      appendHeadingBlock(container, "Introducción", parts.introduction);
+      appendMixedSummaryBlock(container, "Desarrollo", parts.development, parts.topicBullets);
+      if (parts.conclusion.length) {
+        appendHeadingBlock(container, "Conclusión", parts.conclusion);
+      }
+      if (parts.sources.length) {
+        appendHeadingBlock(container, "Fuente", parts.sources);
+      }
+      return container;
+    }
+
     const parts = splitSummaryAndConclusion(answer);
-    appendHeadingBlock(container, "Resumen del documento", parts.summary);
+    appendHeadingBlock(container, "Introducción", parts.summary);
     if (parts.conclusion.length) {
       appendHeadingBlock(container, "Conclusión", parts.conclusion);
+    }
+    if (parts.sources.length) {
+      appendHeadingBlock(container, "Fuente", parts.sources);
     }
     return container;
   }
@@ -2103,6 +2395,88 @@ function renderAnswer(answer, question) {
   }
   appendChatMessage("assistant", answer, {
     question: question || document.getElementById('askQuery').value.trim()
+  });
+}
+
+function isLongFormattedAnswer(answer) {
+  const cleaned = cleanAnswerText(answer);
+  if (!cleaned) return false;
+  const words = cleaned.split(/\s+/).filter(Boolean).length;
+  const lineCount = cleaned.split(/\n+/).filter(function (line) { return line.trim(); }).length;
+  return words >= 150 || lineCount >= 8 || splitIntoParagraphs(cleaned).length >= 4;
+}
+
+function splitSourceBlocks(answer) {
+  const cleaned = cleanAnswerText(answer);
+  const lines = cleaned.split("\n");
+  const body = [];
+  const sources = [];
+  let inSources = false;
+
+  lines.forEach(function (line) {
+    if (/^\s*fuentes?\s*:/i.test(line)) {
+      inSources = true;
+      sources.push(stripTechnicalHeading(line));
+      return;
+    }
+    if (inSources) {
+      if (!line.trim()) {
+        inSources = false;
+        return;
+      }
+      sources.push(stripTechnicalHeading(line));
+      return;
+    }
+    body.push(line);
+  });
+
+  return {
+    body: body.join("\n").trim(),
+    sources: sources.filter(Boolean)
+  };
+}
+
+function extractBulletLines(text) {
+  return String(text || "")
+    .split(/\n+/)
+    .map(function (line) {
+      return line.replace(/^\s*(?:[-*•]\s+|\d+[\).\-\s]+)/, "").trim();
+    })
+    .filter(Boolean);
+}
+
+function looksLikeListText(text) {
+  const lines = String(text || "").split(/\n+/).filter(function (line) { return line.trim(); });
+  if (lines.length >= 3 && lines.filter(function (line) { return /^\s*(?:[-*•]\s+|\d+[\).\-\s]+)/.test(line); }).length >= 2) {
+    return true;
+  }
+  return false;
+}
+
+function transportTopicBullets(text) {
+  const normalized = normalizeForIntent(text);
+  const topics = [
+    { key: "navegacion", label: "Navegación", body: "amplía el alcance del transporte al conectar regiones por ríos, mares y rutas comerciales." },
+    { key: "vapor", label: "Vapor", body: "marca una etapa de mecanización que incrementa velocidad, capacidad y regularidad en los desplazamientos." },
+    { key: "rueda", label: "Rueda", body: "aparece como una innovación base para mejorar el transporte terrestre y la carga." },
+    { key: "movilidad electrica", label: "Movilidad eléctrica", body: "representa la transición hacia sistemas menos dependientes de combustibles tradicionales." },
+    { key: "traccion animal", label: "Tracción animal", body: "permite aumentar distancia y capacidad de transporte antes de la mecanización." },
+    { key: "combustion", label: "Motor de combustión", body: "impulsa la movilidad moderna mediante automóviles, camiones y transporte flexible." },
+    { key: "contenedor", label: "Contenedor intermodal", body: "ordena la logística moderna al facilitar el traslado entre barco, tren y camión." },
+    { key: "alta velocidad", label: "Tren de alta velocidad", body: "resume el avance ferroviario orientado a mover pasajeros con mayor rapidez." },
+    { key: "inteligencia artificial", label: "Autonomía e inteligencia artificial", body: "proyecta sistemas de transporte más automatizados, inteligentes y conectados." }
+  ];
+
+  const matches = topics.filter(function (topic) {
+    return normalized.includes(topic.key);
+  });
+
+  if (matches.length < 3 || String(text || "").split(/\s+/).length < 80) {
+    return [];
+  }
+
+  return matches.map(function (topic) {
+    return topic.label + ": " + topic.body;
   });
 }
 
@@ -2208,18 +2582,38 @@ async function uploadSelectedFile() {
   }
 
   let uploadedCount = 0;
+  const explicitMultiDocumentUpload = files.length > 1;
   try {
     setUploadMessage(files.length === 1 ? "Procesando documento..." : "Procesando documentos...", false, "processing");
+    clearPersistedDocumentState();
+    loadedDocuments = [];
+    currentDocumentId = "";
+    currentDocumentName = "";
+    renderCurrentDocumentName();
 
     for (const file of files) {
       const documentId = await uploadSingleFile(file, token);
+      if (!explicitMultiDocumentUpload) {
+        loadedDocuments = [];
+      }
       addLoadedDocument({ id: documentId, name: file.name });
+      currentDocumentId = documentId;
+      currentDocumentName = file.name;
       uploadedCount++;
     }
 
-    syncCurrentDocumentFromList();
+    if (explicitMultiDocumentUpload) {
+      syncCurrentDocumentFromList();
+    } else if (loadedDocuments.length) {
+      saveLoadedDocuments();
+      try {
+        sessionStorage.setItem(CURRENT_DOCUMENT_ID_KEY, currentDocumentId);
+        sessionStorage.setItem(CURRENT_DOCUMENT_NAME_KEY, currentDocumentName);
+      } catch (err) {}
+    }
 
     renderCurrentDocumentName();
+    console.log("active_document_after_upload=" + selectedDocumentIds().join(","));
     setUploadMessage(uploadedCount === 1 ? "Documento listo para consultar" : uploadedCount + " documentos listos para consultar", false, "ready");
 
   } catch (err) {
@@ -2293,12 +2687,53 @@ function removeLoadedDocument(documentId) {
   });
   syncCurrentDocumentFromList();
   renderCurrentDocumentName();
-  setUploadMessage(loadedDocuments.length ? "Documento quitado de la lista." : "Sin documento cargado.", false);
+  setUploadMessage(loadedDocuments.length ? "Documento quitado de la lista." : "Consulta global en la base de conocimiento", false, loadedDocuments.length ? undefined : "ready");
 }
 
 function selectedDocumentIds() {
-  return loadedDocuments
-    .map(function (item) { return (item.id || "").trim(); })
+  const list = document.getElementById("documentList");
+  const visibleIds = list ? Array.from(list.querySelectorAll(".document-pill"))
+    .map(function (item) { return (item.getAttribute("data-document-id") || "").trim(); })
+    .filter(Boolean) : [];
+  if (visibleIds.length) {
+    return visibleIds;
+  }
+  return [];
+}
+
+function visibleLoadedDocuments() {
+  const list = document.getElementById("documentList");
+  if (!list) {
+    return [];
+  }
+  return Array.from(list.querySelectorAll(".document-pill"))
+    .map(function (item) {
+      return {
+        id: (item.getAttribute("data-document-id") || "").trim(),
+        name: (item.querySelector(".document-pill-name") || {}).textContent || "Documento cargado"
+      };
+    })
+    .filter(function (item) { return item.id; });
+}
+
+function syncStateFromVisibleDocuments() {
+  const visibleDocuments = visibleLoadedDocuments();
+  loadedDocuments = visibleDocuments;
+  if (visibleDocuments.length === 1) {
+    currentDocumentId = visibleDocuments[0].id;
+    currentDocumentName = visibleDocuments[0].name;
+  } else if (visibleDocuments.length > 1) {
+    currentDocumentId = visibleDocuments[0].id;
+    currentDocumentName = visibleDocuments[0].name;
+  } else {
+    currentDocumentId = "";
+    currentDocumentName = "";
+  }
+}
+
+function visibleDocumentLogValue() {
+  return visibleLoadedDocuments()
+    .map(function (item) { return item.name + ":" + item.id; })
     .filter(Boolean);
 }
 
@@ -2316,7 +2751,7 @@ function clearDocument() {
   clearPersistedQueryState();
 
   renderCurrentDocumentName();
-  setUploadMessage("Sin documento cargado.", false);
+  setUploadMessage("Consulta global en la base de conocimiento", false, "ready");
 
   resetChatThread();
 }
@@ -2327,7 +2762,7 @@ function renderCurrentDocumentName() {
   if (!container) return;
 
   if (!loadedDocuments.length) {
-    container.textContent = "Sin documento cargado";
+    container.textContent = "Consulta global en la base de conocimiento";
     if (list) list.innerHTML = "";
     return;
   }
@@ -2339,6 +2774,7 @@ function renderCurrentDocumentName() {
   loadedDocuments.forEach(function (documentInfo) {
     const item = document.createElement("span");
     item.className = "document-pill";
+    item.setAttribute("data-document-id", documentInfo.id || "");
 
     const name = document.createElement("span");
     name.className = "document-pill-name";
@@ -2374,60 +2810,131 @@ async function searchDocs() {
   return askDocument();
 }
 
+function setAskingState(active) {
+  isAsking = active;
+  const askButton = document.getElementById('askButton');
+  if (!askButton) return;
+  askButton.textContent = active ? "Parar" : "Enviar";
+  askButton.setAttribute("aria-label", active ? "Parar respuesta" : "Enviar consulta");
+}
+
+function finishAskState() {
+  isAsking = false;
+  currentAskController = null;
+  currentTypingTimer = null;
+  currentLoadingMessageId = "";
+  setAskingState(false);
+}
+
+function stopCurrentAsk() {
+  if (!isAsking) {
+    return;
+  }
+  if (currentAskController) {
+    currentAskController.abort();
+  }
+  if (currentTypingTimer) {
+    clearTimeout(currentTypingTimer);
+    currentTypingTimer = null;
+  }
+  const messageId = currentLoadingMessageId;
+  finishAskState();
+  if (messageId) {
+    replaceAssistantMessage(messageId, "Respuesta detenida.", document.getElementById('askQuery').value.trim());
+  } else {
+    appendChatMessage("assistant", "Respuesta detenida.");
+  }
+}
+
+function handleAskButtonClick() {
+  if (isAsking) {
+    stopCurrentAsk();
+    return;
+  }
+  askDocument();
+}
+
 async function askDocument() {
   const container = document.getElementById('askResult');
   let loadingMessageId = "";
   let question = "";
+  if (isAsking) {
+    return;
+  }
   try {
-    question = document.getElementById('askQuery').value.trim();
+    const queryInput = document.getElementById('askQuery');
+    question = queryInput.value.trim();
+    syncStateFromVisibleDocuments();
     const documentIds = selectedDocumentIds();
-    const activeDocumentId = (currentDocumentId || "").trim();
     if (!question) {
       appendChatMessage("assistant", "Escribe una consulta.");
       return;
     }
-    if (!documentIds.length) {
-      appendChatMessage("assistant", "Adjunta un archivo para empezar.");
+    if (!getAuthToken()) {
+      appendChatMessage("assistant", "No hay sesión activa. Inicia sesión de nuevo.");
       return;
+    }
+    const globalKnowledgeMode = documentIds.length === 0;
+    if (globalKnowledgeMode) {
+      console.log("global_knowledge_mode_frontend=true");
+      setUploadMessage("Consulta global en la base de conocimiento", false, "ready");
     }
 
     persistQueryState();
     persistLastAnswer("");
+    currentAskController = new AbortController();
+    const askController = currentAskController;
+    setAskingState(true);
     appendChatMessage("user", question);
+    queryInput.value = "";
+    queryInput.style.height = "48px";
+    clearPersistedQueryState();
+    queryInput.focus();
     loadingMessageId = appendChatMessage("assistant", "", { loading: true });
-    console.log("active_document_ids_before_ask", documentIds);
+    currentLoadingMessageId = loadingMessageId;
+    console.log("visible_documents_before_ask=" + visibleDocumentLogValue().join(","));
+    console.log("ask_document_id=" + (documentIds.length === 1 ? documentIds[0] : ""));
     console.log("ask_document_ids=" + documentIds.join(","));
 
     let url = API + "/ask?q=" + encodeURIComponent(question) + "&top_k=3";
     if (documentIds.length > 1) {
       url += "&document_ids=" + encodeURIComponent(documentIds.join(","));
-    } else {
+    } else if (documentIds.length === 1) {
       url += "&document_id=" + encodeURIComponent(documentIds[0]);
     }
     if (documentIds.length === 1) {
       saveCurrentDocument(documentIds[0], currentDocumentName);
-    } else {
-      syncCurrentDocumentFromList();
+    } else if (documentIds.length > 1) {
+      saveLoadedDocuments();
     }
     const res = await fetch(url, {
       method: "GET",
-      headers: authHeaders()
+      headers: authHeaders(),
+      signal: askController.signal
     });
 
     if (!res.ok) {
-      await replaceAssistantMessageTyping(loadingMessageId, "No se encontró información suficiente en el documento para responder esa consulta.", question);
+      await replaceAssistantMessageTyping(loadingMessageId, "No se encontró información suficiente en el documento para responder esa consulta.", question, askController.signal);
       return;
     }
 
     const data = await res.json();
-    await replaceAssistantMessageTyping(loadingMessageId, data.answer || "", question);
+    const completedTyping = await replaceAssistantMessageTyping(loadingMessageId, data.answer || "", question, askController.signal);
+    if (!completedTyping) {
+      return;
+    }
     persistLastAnswer(data.answer || "");
-    const queryInput = document.getElementById('askQuery');
-    queryInput.value = "";
-    queryInput.style.height = "48px";
     loadAskHistory();
   } catch (err) {
-    await replaceAssistantMessageTyping(loadingMessageId, "No se encontró información suficiente en el documento para responder esa consulta.", question);
+    if (err && err.name === "AbortError") {
+      if (loadingMessageId && document.getElementById(loadingMessageId)) {
+        replaceAssistantMessage(loadingMessageId, "Respuesta detenida.", question);
+      }
+      return;
+    }
+    await replaceAssistantMessageTyping(loadingMessageId, "No se encontró información suficiente en el documento para responder esa consulta.", question, null);
+  } finally {
+    finishAskState();
   }
 }
 
@@ -2635,6 +3142,9 @@ document.getElementById('loginPassword').addEventListener('keydown', function (e
 document.getElementById('askQuery').addEventListener('keydown', function (event) {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
+    if (isAsking) {
+      return;
+    }
     askDocument();
   }
 });

@@ -90,6 +90,25 @@ func (s *OpenAIChatService) AnswerDetailedExplanation(ctx context.Context, quest
 	return s.answerDetailedExplanationWithPrompt(ctx, question, contextText)
 }
 
+func (s *OpenAIChatService) AnswerStrictGrounded(ctx context.Context, question string, contextText string, queryType string) (string, error) {
+	config := promptConfigForQueryType(queryType)
+	if strings.TrimSpace(queryType) == "" || queryType == "question" {
+		config = promptConfigForQuestion(question, queryType)
+	}
+	systemPrompt := "Responde únicamente con información presente en el contexto. No uses conocimiento externo, plantillas genéricas, nombres de otros documentos ni inferencias no respaldadas."
+	userRules := `Reglas obligatorias:
+- Responde únicamente con información presente en el contexto.
+- Si el contexto no contiene la información necesaria, responde exactamente: No encontré contenido suficiente en este documento para responder con seguridad.
+- No menciones temas, productos, sistemas, plataformas, archivos ni procesos que no aparezcan en el contexto.
+- No uses frases genéricas para rellenar.
+- No contradigas el contexto.
+- Mantén la respuesta clara y directa.`
+	if config.NumPredict <= 0 {
+		config.NumPredict = 900
+	}
+	return s.answerWithPrompt(ctx, question, contextText, systemPrompt, userRules, config.NumPredict)
+}
+
 func (s *OpenAIChatService) answerWithPrompt(ctx context.Context, question string, contextText string, systemPrompt string, userRules string, maxOutputTokens int) (string, error) {
 	if strings.TrimSpace(s.apiKey) == "" {
 		return "", errors.New("OPENAI_API_KEY no configurada")

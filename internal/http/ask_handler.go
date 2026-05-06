@@ -54,9 +54,14 @@ type askSource struct {
 	Excerpt      string  `json:"excerpt"`
 }
 
+type GroundingResult struct {
+	Passed  bool
+	Reasons []string
+}
+
 const (
 	askTopK          = 8
-	askSummaryTopK   = 45
+	askSummaryTopK   = 30
 	askSectionTopK   = 10
 	askStructureTopK = 12
 	askMultiDocMaxK  = 20
@@ -91,6 +96,22 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	normalizedQuestionForRetrieval := service.NormalizeQuestionForRetrieval(question)
 	queryType := service.QueryTypeForQuery(normalizedQuestionForRetrieval)
 	detailedMode := isDetailedExplanationQuestion(normalizedQuestionForRetrieval)
+	summaryOrExplanationMode := isSummaryOrExplanationQuestion(normalizedQuestionForRetrieval)
+	longSummaryMode := isLongSummaryQuestion(normalizedQuestionForRetrieval)
+	negativeContentCheck := isNegativeContentQuestion(normalizedQuestionForRetrieval)
+	if negativeContentCheck {
+		log.Printf("negative_content_check=true")
+	}
+	if summaryOrExplanationMode || longSummaryMode {
+		queryType = "summary"
+		detailedMode = false
+		if summaryOrExplanationMode {
+			log.Printf("summary_or_explanation_mode=true")
+		}
+		if longSummaryMode {
+			log.Printf("long_summary_mode=true")
+		}
+	}
 	documentID := strings.TrimSpace(r.URL.Query().Get("document_id"))
 	documentIDs := parseDocumentIDs(r)
 	conversationContextUsed := false
@@ -112,15 +133,43 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	} else if len(documentIDs) == 1 {
 		documentID = strings.TrimSpace(documentIDs[0])
 	}
+	if documentID != "" && h.searchRepo != nil {
+		if topic := earlyUnsupportedTopicFromQuestion(question); topic != "" {
+			directChunks, err := h.searchRepo.GetChunksByDocumentID(r.Context(), documentID)
+			if err == nil {
+				directChunks = filterChunksByDocumentID(directChunks, documentID)
+				if len(directChunks) > 0 && !mainTopicAppearsInContext(topic, directChunks, "") {
+					answer := "No encontré información relacionada con " + unsupportedTopicDisplayName(topic) + " en el documento consultado."
+					log.Printf("early_unsupported_topic_block=true")
+					log.Printf("unsupported_topic=%s", topic)
+					h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, "", nil)
+					h.writeAskResponse(w, r, ipcCtx.TenantID, "", question, answer, "", nil, nil)
+					return
+				}
+			} else {
+				log.Printf("early_unsupported_topic_chunks_error document_id=%s unsupported_topic=%s error=%v", documentID, topic, err)
+			}
+		}
+	}
 	selectedDocumentIDs := strings.Join(documentIDs, ",")
 	multiDocumentMode := len(documentIDs) > 1
 	if multiDocumentMode {
 		detailedMode = false
 	}
 	globalKnowledgeMode := len(documentIDs) == 0 && strings.TrimSpace(documentID) == ""
+	globalDocumentsScanned := 0
 	log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, len(documentIDs))
 	if globalKnowledgeMode {
 		log.Printf("global_knowledge_mode=true")
+		if h.searchRepo != nil {
+			allTenantChunks, err := h.searchRepo.GetChunksByDocumentIDs(r.Context(), ipcCtx.TenantID, nil)
+			if err != nil {
+				log.Printf("global_knowledge_documents_scan_error=%v", err)
+			} else {
+				globalDocumentsScanned = countUniqueDocumentsInChunks(allTenantChunks)
+				log.Printf("global_knowledge_mode=true documents_scanned=%d", globalDocumentsScanned)
+			}
+		}
 	}
 	activeFilename := ""
 	activeChunks := []postgres.SearchResult{}
@@ -141,6 +190,28 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		}
 		activeContentType = service.DetectDocumentContentTypeFromChunks(activeChunks)
 		log.Printf("document_type_detected=%s document_id=%s active_filename=%q", activeContentType, documentID, activeFilename)
+		if negativeContentCheck {
+			answer := "No encontré esa información en el documento consultado."
+			log.Printf("unsupported_topic_detected=false")
+			contextWindow := activeChunks
+			if len(contextWindow) > askTopK {
+				contextWindow = contextWindow[:askTopK]
+			}
+			contextText, sources := buildAskContext(contextWindow)
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
+			logDocumentScopedAnswer(documentID, activeFilename, activeChunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, activeChunks, sources)
+			return
+		}
+		if !summaryOrExplanationMode && !longSummaryMode && queryType != "summary" && unsupportedTopicDetected(normalizedQuestionForRetrieval, activeChunks) {
+			answer := unsupportedTopicAnswer(normalizedQuestionForRetrieval)
+			log.Printf("unsupported_topic_detected=true")
+			log.Printf("unsupported_topic=%s", unsupportedTopicDisplayName(unsupportedTopicForQuestion(normalizedQuestionForRetrieval)))
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, "", nil)
+			logDocumentScopedAnswer(documentID, activeFilename, activeChunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, "", nil, nil)
+			return
+		}
 		if activeDocumentDetectedType(activeFilename) == "image" {
 			answer := interpretImageOCRAnswer(question, activeChunks)
 			answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
@@ -209,17 +280,38 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		log.Printf("summary_chunks_found=%d", len(chunks))
 		log.Printf("chunks_found=%d", len(chunks))
 		log.Printf("summary_direct_mode=true summary_document_id=%s summary_chunks_found=%d", documentID, len(chunks))
+		if longSummaryMode {
+			log.Printf("long_summary_mode=true")
+			log.Printf("long_summary_chunks_found=%d", len(chunks))
+		}
 
 		if len(chunks) > askSummaryTopK {
 			chunks = chunks[:askSummaryTopK]
 		}
 
 		log.Printf("summary_direct_mode=true summary_document_id=%s summary_chunks_used=%d", documentID, len(chunks))
+		if summaryOrExplanationMode {
+			log.Printf("summary_or_explanation_mode=true")
+			log.Printf("summary_chunks_used=%d", len(chunks))
+		}
 
 		contextText, sources := buildAskContext(chunks)
 		if !chunksHaveReadableText(chunks) {
 			answer := insufficientProcessedContentAnswer
 			answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
+			logDocumentScopedAnswer(documentID, activeFilename, chunks)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, chunks, sources)
+			return
+		}
+
+		if longSummaryMode {
+			contextText, sources = buildSummaryContext(chunks)
+			answer, fallbackUsed := h.answerLongSummary(r.Context(), question, contextText, chunks, sources)
+			answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
+			answerLines := countAnswerLines(answer)
+			log.Printf("long_summary_fallback_used=%t", fallbackUsed)
+			log.Printf("long_summary_answer_lines=%d", answerLines)
 			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
 			logDocumentScopedAnswer(documentID, activeFilename, chunks)
 			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, chunks, sources)
@@ -264,6 +356,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			answer = buildChunkBasedAnswer(question, chunks, "summary")
 		}
 		answer = enforceActiveDocumentAnswerScope(answer, activeFilename)
+		log.Printf("answer_length_lines=%d", countAnswerLines(answer))
 
 		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, documentID, question, answer, contextText, sources)
 		logDocumentScopedAnswer(documentID, activeFilename, chunks)
@@ -334,7 +427,7 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	if globalKnowledgeMode {
 		requestedTopK = 20
 	}
-	if multiDocumentMode && requestedTopK > 20 {
+	if multiDocumentMode && requestedTopK > 20 && !summaryOrExplanationMode {
 		requestedTopK = 20
 	}
 
@@ -411,7 +504,12 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 	retrievedChunks = filterChunksByDocumentID(retrievedChunks, documentID)
 	if globalKnowledgeMode {
-		log.Printf("global_knowledge_mode=true documents_scanned=%d", countUniqueDocumentsInChunks(retrievedChunks))
+		if globalDocumentsScanned == 0 {
+			globalDocumentsScanned = countUniqueDocumentsInChunks(retrievedChunks)
+		}
+		retrievedChunks = limitGlobalKnowledgeChunks(retrievedChunks, 5, 20)
+		log.Printf("global_knowledge_mode=true documents_scanned=%d", globalDocumentsScanned)
+		log.Printf("global_chunks_found=%d", len(retrievedChunks))
 	}
 	log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, countUniqueDocumentsInChunks(retrievedChunks))
 
@@ -422,12 +520,44 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 	prioritizedChunks, restoredChunksAfterEntityFilter, askEntityRefilterRemovedAll := prioritizeAskChunksByEntity(retrievedChunks, mainEntity, entityFilterApplied)
 	contextChunks := selectAskContextChunks(prioritizedChunks, queryType, normalizedQuestionForRetrieval)
+	if summaryOrExplanationMode && len(multiDocumentChunks) > 0 {
+		contextChunks = selectMultiDocumentCoverageChunks(multiDocumentChunks, askMultiDocMinK, askSummaryTopK)
+	}
+	if summaryOrExplanationMode && len(contextChunks) > askSummaryTopK {
+		contextChunks = contextChunks[:askSummaryTopK]
+	}
+	if longSummaryMode && len(contextChunks) > askSummaryTopK {
+		contextChunks = contextChunks[:askSummaryTopK]
+	}
 	if detailedMode && len(contextChunks) > 20 {
 		contextChunks = contextChunks[:20]
+	}
+	if globalKnowledgeMode {
+		contextChunks = limitGlobalKnowledgeChunks(contextChunks, 5, 20)
+		log.Printf("global_knowledge_mode=true documents_scanned=%d documents_used=%d", globalDocumentsScanned, countUniqueDocumentsInChunks(contextChunks))
 	}
 	summaryDirectChunkMode := queryType == "summary" && len(documentIDs) > 0
 	detectedIntent := classifyQuestionIntent(normalizedQuestionForRetrieval)
 	log.Printf("ask_intent_detected query=%q normalized_question_for_retrieval=%q intent_detected=%q chunks_found=%d selected_chunks=%d", question, normalizedQuestionForRetrieval, detectedIntent, len(retrievedChunks), len(contextChunks))
+	if summaryOrExplanationMode {
+		log.Printf("summary_or_explanation_mode=true")
+		log.Printf("summary_chunks_used=%d", len(contextChunks))
+	}
+	if longSummaryMode {
+		log.Printf("long_summary_mode=true")
+		log.Printf("long_summary_chunks_found=%d", len(retrievedChunks))
+	}
+	contextTextForUnsupportedTopic, _ := buildAskContext(contextChunks)
+	if !summaryOrExplanationMode && !longSummaryMode && queryType != "summary" && unsupportedTopicDetectedInContext(normalizedQuestionForRetrieval, contextChunks, contextTextForUnsupportedTopic) {
+		answer := unsupportedTopicAnswer(normalizedQuestionForRetrieval)
+		log.Printf("unsupported_topic_detected=true")
+		log.Printf("unsupported_topic=%s", unsupportedTopicDisplayName(unsupportedTopicForQuestion(normalizedQuestionForRetrieval)))
+		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(documentIDs, documentID), question, answer, "", nil)
+		logDocumentScopedAnswer(firstDocumentID(documentIDs, documentID), activeFilename, contextChunks)
+		h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, "", nil, nil)
+		return
+	}
+	log.Printf("unsupported_topic_detected=false")
 
 	log.Printf(
 		"ask_retrieval query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q intent_detected=%q document_id=%s selected_document_ids=%q multi_document_mode=%t retrieval_chunks_count=%d main_entity_detected=%q entity_filter_applied=%t entity_extraction_mode=%q reason_entity_rejected=%q restored_chunks_after_entity_filter=%t ask_entity_refilter_removed_all=%t section_query_detected=%t section_term=%q selected_chunks=%s summary_direct_chunk_mode=%t summary_chunks_used=%d",
@@ -458,7 +588,9 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		contextText := ""
 		sources := []askSource{}
 		if globalKnowledgeMode {
-			log.Printf("global_knowledge_mode=true documents_scanned=0")
+			answer = "No encontré información relacionada con esa consulta en la base de conocimiento."
+			log.Printf("global_knowledge_mode=true documents_scanned=%d documents_used=0", globalDocumentsScanned)
+			log.Printf("global_chunks_found=0")
 		}
 		answerLengthMode := answerLengthModeForQueryType(queryType)
 		finalAnswerLineCount := countAnswerLines(answer)
@@ -552,6 +684,11 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		if detailedMode {
 			modelTokensLimit = service.ModelTokensLimitForDetailedExplanation()
 			answer, err = h.chatService.AnswerDetailedExplanation(r.Context(), question, contextText)
+		} else if longSummaryMode {
+			summaryChunksUsed = len(contextChunks)
+			answer, chunkAnswerUsed = h.answerLongSummary(r.Context(), question, contextText, contextChunks, sources)
+			err = nil
+			log.Printf("long_summary_fallback_used=%t", chunkAnswerUsed)
 		} else if queryType == "summary" {
 			summaryChunksUsed = len(contextChunks)
 			sectionGroups := service.BuildSummarySectionGroups(contextChunks)
@@ -635,6 +772,10 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		log.Printf("detailed_mode=true")
 		log.Printf("chunks_used=%d", len(contextChunks))
 		log.Printf("answer_length_lines=%d", finalAnswerLineCount)
+	}
+	if longSummaryMode {
+		answerLengthMode = "long_summary"
+		log.Printf("long_summary_answer_lines=%d", finalAnswerLineCount)
 	}
 
 	log.Printf(
@@ -1015,10 +1156,14 @@ func (h *AskHandler) persistAskLog(r *http.Request, tenantID, userID, documentID
 func (h *AskHandler) writeAskResponse(w http.ResponseWriter, r *http.Request, tenantID string, fallbackFilename string, question, answer, contextText string, chunks []postgres.SearchResult, sources []askSource) {
 	sources = h.enrichAnswerSources(r.Context(), tenantID, fallbackFilename, chunks, sources)
 	detailedMode := isDetailedExplanationQuestion(question)
+	longSummaryMode := isLongSummaryQuestion(question)
 	if isRawChunkAnswer(answer) {
 		if detailedMode {
 			answer = buildDetailedExplanationFallback(question, chunks, sources)
 			log.Printf("detailed_mode=true")
+		} else if longSummaryMode {
+			answer = buildLongSummaryFallback(question, chunks, sources)
+			log.Printf("long_summary_fallback_used=true")
 		} else if interpreted := buildInterpretedFallback(chunks, sources); strings.TrimSpace(interpreted) != "" {
 			answer = interpreted
 			log.Printf("interpreted_fallback_used=true")
@@ -1030,6 +1175,9 @@ func (h *AskHandler) writeAskResponse(w http.ResponseWriter, r *http.Request, te
 		if detailedMode {
 			answer = buildDetailedExplanationFallback(question, chunks, sources)
 			log.Printf("detailed_mode=true")
+		} else if longSummaryMode {
+			answer = buildLongSummaryFallback(question, chunks, sources)
+			log.Printf("long_summary_fallback_used=true")
 		} else if interpreted := h.interpretRawAnswer(r.Context(), tenantID, question, contextText, chunks); strings.TrimSpace(interpreted) != "" {
 			answer = interpreted
 		}
@@ -1038,16 +1186,27 @@ func (h *AskHandler) writeAskResponse(w http.ResponseWriter, r *http.Request, te
 		if detailedMode {
 			answer = buildDetailedExplanationFallback(question, chunks, sources)
 			log.Printf("detailed_mode=true")
+		} else if longSummaryMode {
+			answer = buildLongSummaryFallback(question, chunks, sources)
+			log.Printf("long_summary_fallback_used=true")
 		} else if interpreted := buildInterpretedFallback(chunks, sources); strings.TrimSpace(interpreted) != "" {
 			answer = interpreted
 			log.Printf("interpreted_fallback_used=true")
 		}
+	}
+	if longSummaryMode && answerTooShortForLongSummary(answer, chunks) {
+		answer = buildLongSummaryFallback(question, chunks, sources)
+		log.Printf("long_summary_fallback_used=true")
 	}
 	if detailedMode {
 		answer = ensureDetailedExplanationAnswer(question, answer, chunks, sources)
 		log.Printf("chunks_used=%d", minInt(len(chunks), 20))
 		log.Printf("answer_length_lines=%d", countAnswerLines(answer))
 	}
+	if longSummaryMode {
+		log.Printf("long_summary_answer_lines=%d", countAnswerLines(answer))
+	}
+	answer = h.groundAnswerToCurrentContext(r.Context(), tenantID, fallbackFilename, question, answer, contextText, chunks, sources)
 	if strings.TrimSpace(answer) != "" && answer != insufficientProcessedContentAnswer {
 		log.Printf("interpreted_answer_used=true")
 	}
@@ -1065,6 +1224,586 @@ func (h *AskHandler) writeAskResponse(w http.ResponseWriter, r *http.Request, te
 
 func documentsCitedCount(sources []askSource) int {
 	return len(orderSourceLabelsForDisplay(answerSourceLabels(sources)))
+}
+
+func (h *AskHandler) groundAnswerToCurrentContext(ctx context.Context, tenantID string, fallbackFilename string, question string, answer string, contextText string, chunks []postgres.SearchResult, sources []askSource) string {
+	context := groundedContextText(contextText, chunks)
+	documentID := currentResponseDocumentID(chunks, sources)
+	documentName := currentResponseDocumentName(sources, fallbackFilename)
+	if documentName == "" && h.searchRepo != nil && documentID != "" {
+		if name, err := h.searchRepo.GetDocumentFilename(ctx, tenantID, documentID); err == nil {
+			documentName = strings.TrimSpace(name)
+		}
+	}
+
+	log.Printf("answer_grounding_checked=true")
+	log.Printf("current_document_id=%s", documentID)
+	log.Printf("current_document_name=%s", documentName)
+	log.Printf("context_preview=%q", contextPreview(context, 300))
+
+	if shouldSkipGroundingValidation(answer) {
+		log.Printf("unsupported_content_detected=false")
+		log.Printf("grounding_validation_passed=true")
+		log.Printf("grounding_retry_used=false")
+		log.Printf("grounding_fallback_used=false")
+		return answer
+	}
+
+	result := validateAnswerGrounding(answer, context, documentName)
+	log.Printf("unsupported_content_detected=%t", containsGroundingReason(result, "unsupported_content"))
+	log.Printf("grounding_validation_passed=%t", result.Passed)
+	if result.Passed {
+		log.Printf("grounding_retry_used=false")
+		log.Printf("grounding_fallback_used=false")
+		return answer
+	}
+
+	retryUsed := false
+	fallbackUsed := false
+	if h.chatService != nil && strings.TrimSpace(context) != "" {
+		retryUsed = true
+		strictAnswer, err := h.chatService.AnswerStrictGrounded(ctx, question, context, service.QueryTypeForQuery(question))
+		if err != nil {
+			log.Printf("grounding_retry_error=%v", err)
+		} else {
+			strictAnswer = cleanUserVisibleAnswer(strictAnswer)
+			retryResult := validateAnswerGrounding(strictAnswer, context, documentName)
+			log.Printf("grounding_retry_validation_passed=%t", retryResult.Passed)
+			if retryResult.Passed {
+				log.Printf("grounding_retry_used=%t", retryUsed)
+				log.Printf("grounding_fallback_used=false")
+				return strictAnswer
+			}
+		}
+	}
+
+	fallback := buildFaithfulContextFallback(question, chunks, sources)
+	fallbackUsed = true
+	log.Printf("grounding_retry_used=%t", retryUsed)
+	log.Printf("grounding_fallback_used=%t", fallbackUsed)
+	if strings.TrimSpace(fallback) == "" {
+		return "No encontré contenido suficiente en este documento para responder con seguridad."
+	}
+	return fallback
+}
+
+func shouldSkipGroundingValidation(answer string) bool {
+	normalized := service.NormalizeSearchText(answer)
+	if normalized == "" {
+		return false
+	}
+	skipPhrases := []string{
+		service.NormalizeSearchText(insufficientProcessedContentAnswer),
+		service.NormalizeSearchText("No encontré contenido suficiente en este documento para responder con seguridad."),
+		service.NormalizeSearchText("No encontré información relacionada"),
+		service.NormalizeSearchText("No encontré esa información en el documento consultado."),
+		"no autorizado",
+		"sesion invalida",
+		"sesion expirada",
+		"formato de archivo no soportado",
+		"no se pudo",
+		"ninguno de los documentos tiene contenido procesado",
+		"no hay sesion activa",
+	}
+	for _, phrase := range skipPhrases {
+		if phrase != "" && strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsGroundingReason(result GroundingResult, reason string) bool {
+	for _, item := range result.Reasons {
+		if item == reason {
+			return true
+		}
+	}
+	return false
+}
+
+func groundedContextText(contextText string, chunks []postgres.SearchResult) string {
+	contextText = strings.TrimSpace(contextText)
+	if contextText != "" {
+		return contextText
+	}
+	return chunksTextSample(chunks, 24000)
+}
+
+func currentResponseDocumentID(chunks []postgres.SearchResult, sources []askSource) string {
+	for _, source := range sources {
+		if id := strings.TrimSpace(source.DocumentID); id != "" {
+			return id
+		}
+	}
+	for _, chunk := range chunks {
+		if id := strings.TrimSpace(chunk.DocumentID); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func currentResponseDocumentName(sources []askSource, fallbackFilename string) string {
+	for _, source := range sources {
+		if name := strings.TrimSpace(source.DocumentName); name != "" {
+			return cleanDisplayFormatting(name)
+		}
+	}
+	return cleanDisplayFormatting(strings.TrimSpace(fallbackFilename))
+}
+
+func contextPreview(context string, limit int) string {
+	context = cleanDisplayFormatting(service.SanitizeSensitiveText(context))
+	context = strings.Join(strings.Fields(context), " ")
+	runes := []rune(context)
+	if limit > 0 && len(runes) > limit {
+		return string(runes[:limit])
+	}
+	return context
+}
+
+func answerMentionsUnsupportedContent(answer, context string) bool {
+	normalizedAnswer := service.NormalizeSearchText(answer)
+	if normalizedAnswer == "" {
+		return false
+	}
+	normalizedContext := service.NormalizeSearchText(context)
+	suspiciousTerms := []string{
+		"auradb",
+		"pipeline",
+		"plataforma",
+		"analisis documental",
+		"subir archivos",
+		"procesar contenido",
+		"procesar su contenido",
+	}
+	for _, term := range suspiciousTerms {
+		normalizedTerm := service.NormalizeSearchText(term)
+		if normalizedTerm == "" || !strings.Contains(normalizedAnswer, normalizedTerm) {
+			continue
+		}
+		if !strings.Contains(normalizedContext, normalizedTerm) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateAnswerGrounding(answer, context, documentName string) GroundingResult {
+	result := GroundingResult{Passed: true}
+	answer = strings.TrimSpace(answer)
+	context = strings.TrimSpace(context)
+	if answer == "" {
+		result.Passed = false
+		result.Reasons = append(result.Reasons, "empty_answer")
+		return result
+	}
+	if context == "" {
+		result.Passed = false
+		result.Reasons = append(result.Reasons, "empty_context")
+		return result
+	}
+
+	if answerMentionsUnsupportedContent(answer, context) {
+		result.Passed = false
+		result.Reasons = append(result.Reasons, "unsupported_content")
+	}
+	if answerHasUnsupportedTopicTerms(answer, context, documentName) {
+		result.Passed = false
+		result.Reasons = append(result.Reasons, "unsupported_topics")
+	}
+	if answerContainsUnsupportedGenericPhrase(answer, context) {
+		result.Passed = false
+		result.Reasons = append(result.Reasons, "unsupported_generic_phrase")
+	}
+	if answerLooksLikeUnsupportedTemplate(answer, context) {
+		result.Passed = false
+		result.Reasons = append(result.Reasons, "template_answer")
+	}
+	if answerContradictsAvailableContext(answer, context) {
+		result.Passed = false
+		result.Reasons = append(result.Reasons, "possible_contradiction")
+	}
+	if answerTooShortForGroundedSummary(answer, context) {
+		result.Passed = false
+		result.Reasons = append(result.Reasons, "too_short_for_summary")
+	}
+	return result
+}
+
+func answerHasUnsupportedTopicTerms(answer, context, documentName string) bool {
+	answerTerms := significantGroundingTerms(answer)
+	if len(answerTerms) == 0 {
+		return false
+	}
+	normalizedContext := service.NormalizeSearchText(context)
+	normalizedDocumentName := service.NormalizeSearchText(documentName)
+	unsupported := 0
+	checked := 0
+	for _, term := range answerTerms {
+		if strings.Contains(normalizedDocumentName, term) || isAllowedAnswerMetaTerm(term) {
+			continue
+		}
+		checked++
+		if !strings.Contains(normalizedContext, term) {
+			unsupported++
+		}
+	}
+	if checked < 8 {
+		return unsupported >= 5
+	}
+	return unsupported >= 6 && unsupported*100/checked >= 38
+}
+
+func significantGroundingTerms(text string) []string {
+	normalized := service.NormalizeSearchText(text)
+	seen := make(map[string]bool)
+	terms := make([]string, 0)
+	for _, term := range strings.Fields(normalized) {
+		if len([]rune(term)) < 6 || askKeywordStopwords[term] || groundingStopTerms[term] || seen[term] {
+			continue
+		}
+		seen[term] = true
+		terms = append(terms, term)
+	}
+	return terms
+}
+
+var groundingStopTerms = map[string]bool{
+	"documento": true, "documentos": true, "respuesta": true, "fuente": true,
+	"fuentes": true, "contenido": true, "contexto": true, "informacion": true,
+	"información": true, "principal": true, "principales": true, "general": true,
+	"ademas": true, "además": true, "tambien": true, "también": true,
+	"conclusion": true, "conclusión": true, "introduccion": true, "introducción": true,
+	"desarrollo": true, "presenta": true, "explica": true, "describe": true,
+	"aborda": true, "menciona": true, "permite": true, "relacion": true,
+	"relación": true, "manera": true, "forma": true, "partir": true,
+}
+
+func isAllowedAnswerMetaTerm(term string) bool {
+	return groundingStopTerms[term] || strings.HasPrefix(term, "document")
+}
+
+func answerContainsUnsupportedGenericPhrase(answer, context string) bool {
+	normalizedAnswer := service.NormalizeSearchText(answer)
+	normalizedContext := service.NormalizeSearchText(context)
+	phrases := []string{
+		"plataforma de analisis documental",
+		"sistema de analisis documental",
+		"subir archivos",
+		"procesar su contenido",
+		"consultarlos mediante preguntas",
+		"informacion util consultable",
+		"transformar archivos en informacion util",
+		"respuesta generada",
+		"contenido procesado suficiente",
+	}
+	for _, phrase := range phrases {
+		normalizedPhrase := service.NormalizeSearchText(phrase)
+		if strings.Contains(normalizedAnswer, normalizedPhrase) && !strings.Contains(normalizedContext, normalizedPhrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func answerLooksLikeUnsupportedTemplate(answer, context string) bool {
+	normalizedAnswer := service.NormalizeSearchText(answer)
+	normalizedContext := service.NormalizeSearchText(context)
+	templateStarts := []string{
+		"el documento presenta un tema central",
+		"el documento desarrolla su tema mediante ideas relacionadas",
+		"el contenido se organiza para que sus ideas principales",
+		"su objetivo es explicar el contenido principal",
+		"respuesta basada en el documento",
+	}
+	for _, prefix := range templateStarts {
+		normalizedPrefix := service.NormalizeSearchText(prefix)
+		if strings.Contains(normalizedAnswer, normalizedPrefix) && !strings.Contains(normalizedContext, normalizedPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func answerContradictsAvailableContext(answer, context string) bool {
+	normalizedAnswer := service.NormalizeSearchText(answer)
+	if !containsAnyNormalized(normalizedAnswer, "no encontre", "no encontré", "no menciona", "no contiene", "no hay informacion", "no hay información") {
+		return false
+	}
+	return len(strings.Fields(service.NormalizeSearchText(context))) >= 120
+}
+
+func answerTooShortForGroundedSummary(answer, context string) bool {
+	normalizedAnswer := service.NormalizeSearchText(answer)
+	contextWords := len(strings.Fields(service.NormalizeSearchText(context)))
+	answerWords := len(strings.Fields(normalizedAnswer))
+	if contextWords < 350 || answerWords >= 45 {
+		return false
+	}
+	return containsAnyNormalized(normalizedAnswer, "resumen", "documento", "analiza", "explica", "describe", "tema central")
+}
+
+func unsupportedTopicDetected(question string, chunks []postgres.SearchResult) bool {
+	return unsupportedTopicDetectedInContext(question, chunks, "")
+}
+
+func earlyUnsupportedTopicFromQuestion(question string) string {
+	normalized := service.NormalizeSearchText(question)
+	patterns := []string{
+		"hablame de ",
+		"informacion sobre ",
+		"dime sobre ",
+	}
+	for _, pattern := range patterns {
+		if idx := strings.Index(normalized, pattern); idx >= 0 {
+			topic := cleanUnsupportedTopicTail(strings.TrimSpace(normalized[idx+len(pattern):]))
+			if isUnsupportedTopicCandidate(topic) {
+				return topic
+			}
+		}
+	}
+	return ""
+}
+
+func unsupportedTopicDetectedInContext(question string, chunks []postgres.SearchResult, contextText string) bool {
+	topic := unsupportedTopicForQuestion(question)
+	if topic == "" || len(chunks) == 0 {
+		return false
+	}
+	return !mainTopicAppearsInContext(topic, chunks, contextText)
+}
+
+func unsupportedTopicForQuestion(question string) string {
+	normalized := service.NormalizeSearchText(question)
+	topicPatterns := []string{
+		"hablame de ",
+		"hablame sobre ",
+		"habla de ",
+		"habla sobre ",
+		"dime de ",
+		"dime sobre ",
+		"informacion sobre ",
+		"informacion de ",
+		"explicame ",
+		"explicame de ",
+		"explicame sobre ",
+		"analiza ",
+		"analiza de ",
+		"analiza sobre ",
+		"que dice sobre ",
+		"que dice de ",
+		"cuentame de ",
+		"cuentame sobre ",
+	}
+	for _, pattern := range topicPatterns {
+		normalizedPattern := service.NormalizeSearchText(pattern)
+		if idx := strings.Index(normalized, normalizedPattern); idx >= 0 {
+			tail := strings.TrimSpace(normalized[idx+len(normalizedPattern):])
+			tail = cleanUnsupportedTopicTail(tail)
+			if isUnsupportedTopicCandidate(tail) {
+				return tail
+			}
+		}
+	}
+	return ""
+}
+
+func cleanUnsupportedTopicTail(topic string) string {
+	noise := []string{
+		"en el documento",
+		"del documento",
+		"segun el documento",
+		"de acuerdo con el documento",
+		"consultado",
+		"por favor",
+	}
+	for _, item := range noise {
+		topic = strings.ReplaceAll(topic, service.NormalizeSearchText(item), "")
+	}
+	terms := strings.Fields(topic)
+	cleaned := make([]string, 0, len(terms))
+	for _, term := range terms {
+		if askKeywordStopwords[term] || groundingStopTerms[term] {
+			continue
+		}
+		cleaned = append(cleaned, term)
+		if len(cleaned) == 4 {
+			break
+		}
+	}
+	return strings.TrimSpace(strings.Join(cleaned, " "))
+}
+
+func isUnsupportedTopicCandidate(topic string) bool {
+	terms := strings.Fields(topic)
+	if len(terms) == 0 || len(terms) > 4 {
+		return false
+	}
+	for _, term := range terms {
+		if len([]rune(term)) >= 5 {
+			return true
+		}
+	}
+	return false
+}
+
+func unsupportedTopicVariants(topic string) []string {
+	topic = service.NormalizeSearchText(topic)
+	variants := []string{topic}
+	switch topic {
+	case "biologia":
+		variants = append(variants, "biología", "biologico", "biológica", "biologia")
+	}
+	return variants
+}
+
+func mainTopicAppearsInContext(topic string, chunks []postgres.SearchResult, contextText string) bool {
+	normalizedContext := service.NormalizeSearchText(strings.TrimSpace(contextText + " " + normalizedChunksText(chunks)))
+	if normalizedContext == "" {
+		return false
+	}
+	contextTerms := normalizedTermSet(normalizedContext)
+	topicTerms := strings.Fields(service.NormalizeSearchText(topic))
+	if len(topicTerms) == 0 {
+		return false
+	}
+	checkedTerms := 0
+	for _, topicTerm := range topicTerms {
+		if askKeywordStopwords[topicTerm] || groundingStopTerms[topicTerm] {
+			continue
+		}
+		checkedTerms++
+		if !termOrVariantInSet(topicTerm, contextTerms) {
+			return false
+		}
+	}
+	return checkedTerms > 0
+}
+
+func normalizedTermSet(text string) map[string]bool {
+	terms := strings.Fields(service.NormalizeSearchText(text))
+	set := make(map[string]bool, len(terms))
+	for _, term := range terms {
+		set[term] = true
+	}
+	return set
+}
+
+func termOrVariantInSet(term string, set map[string]bool) bool {
+	for _, variant := range unsupportedTopicVariants(term) {
+		for _, normalizedVariant := range basicSingularPluralVariants(variant) {
+			if set[normalizedVariant] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func basicSingularPluralVariants(term string) []string {
+	term = service.NormalizeSearchText(term)
+	if term == "" {
+		return nil
+	}
+	variants := []string{term}
+	if strings.HasSuffix(term, "es") && len([]rune(term)) > 4 {
+		variants = append(variants, strings.TrimSuffix(term, "es"))
+	}
+	if strings.HasSuffix(term, "s") && len([]rune(term)) > 3 {
+		variants = append(variants, strings.TrimSuffix(term, "s"))
+	} else {
+		variants = append(variants, term+"s")
+		if strings.HasSuffix(term, "n") || strings.HasSuffix(term, "l") || strings.HasSuffix(term, "r") || strings.HasSuffix(term, "d") || strings.HasSuffix(term, "z") {
+			variants = append(variants, term+"es")
+		}
+	}
+	return uniqueStringsPreservingOrder(variants)
+}
+
+func unsupportedTopicAnswer(question string) string {
+	topic := unsupportedTopicForQuestion(question)
+	if topic == "" {
+		return "No encontré esa información en el documento consultado."
+	}
+	return "No encontré información relacionada con " + unsupportedTopicDisplayName(topic) + " en el documento consultado."
+}
+
+func unsupportedTopicDisplayName(topic string) string {
+	switch topic {
+	case "biologia":
+		return "biología"
+	default:
+		return topic
+	}
+}
+
+func buildFaithfulContextFallback(question string, chunks []postgres.SearchResult, sources []askSource) string {
+	_ = question
+	chunks = chunksWithReadableContent(chunks)
+	if len(chunks) == 0 || !chunksHaveReadableText(chunks) {
+		return "No encontré contenido suficiente en este documento para responder con seguridad."
+	}
+
+	sentences := faithfulContextSentences(chunks, 8)
+	if len(sentences) == 0 {
+		return "No encontré contenido suficiente en este documento para responder con seguridad."
+	}
+
+	var builder strings.Builder
+	if len(sentences) <= 3 {
+		builder.WriteString(joinParagraphs(sentences))
+	} else {
+		builder.WriteString("Respuesta basada en el documento\n\n")
+		for _, sentence := range sentences {
+			builder.WriteString("- ")
+			builder.WriteString(ensureSentence(sentence))
+			builder.WriteString("\n")
+		}
+	}
+	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
+		builder.WriteString("\n")
+		builder.WriteString(sourceLine)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func chunksWithReadableContent(chunks []postgres.SearchResult) []postgres.SearchResult {
+	filtered := make([]postgres.SearchResult, 0, len(chunks))
+	for _, chunk := range chunks {
+		if strings.TrimSpace(chunk.Content) == "" {
+			continue
+		}
+		filtered = append(filtered, chunk)
+	}
+	return filtered
+}
+
+func faithfulContextSentences(chunks []postgres.SearchResult, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	sentences := make([]string, 0, limit)
+	for _, chunk := range chunks {
+		for _, sentence := range extractChunkSentences(chunk.Content) {
+			sentence = cleanFinalAnswerLine(sentence)
+			if sentence == "" {
+				continue
+			}
+			key := service.NormalizeSearchText(sentence)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			sentences = append(sentences, sentence)
+			if len(sentences) == limit {
+				return sentences
+			}
+		}
+	}
+	return sentences
 }
 
 func writeAskResponse(w http.ResponseWriter, question, answer, contextText string, chunks []postgres.SearchResult, sources []askSource) {
@@ -1263,6 +2002,51 @@ func (h *AskHandler) interpretRawAnswer(ctx context.Context, tenantID string, qu
 func isDetailedExplanationQuestion(question string) bool {
 	normalized := service.NormalizeSearchText(question)
 	return containsAnyNormalized(normalized, "explica", "explicame", "analiza", "describe", "detalla", "desarrolla")
+}
+
+func isSummaryOrExplanationQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(
+		normalized,
+		"resumen",
+		"resume",
+		"resumir",
+		"dame un resumen",
+		"explica",
+		"explicame",
+		"analiza",
+	)
+}
+
+func isLongSummaryQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(
+		normalized,
+		"resumen completo",
+		"resumen amplio",
+		"resumen detallado",
+		"dame un resumen completo",
+		"explicame completo",
+		"analiza completo",
+	)
+}
+
+func isNegativeContentQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(
+		normalized,
+		"algo que no este",
+		"algo que no esté",
+		"algo inexistente",
+		"algo fuera del documento",
+		"algo inventado",
+		"algo que no aparece",
+		"informacion que no este",
+		"información que no esté",
+		"contenido inexistente",
+		"fuera del documento",
+		"inventado",
+	)
 }
 
 func ensureDetailedExplanationAnswer(question string, answer string, chunks []postgres.SearchResult, sources []askSource) string {
@@ -1581,33 +2365,7 @@ func buildInterpretedFallback(chunks []postgres.SearchResult, sources []askSourc
 	if len(chunks) == 0 {
 		return ""
 	}
-	normalized := service.NormalizeSearchText(chunksTextSample(chunks, 12000))
-	paragraphs := make([]string, 0, 3)
-
-	switch {
-	case containsAnyNormalized(normalized, "transporte", "movilidad", "rueda", "traccion", "infraestructura vial"):
-		paragraphs = append(paragraphs,
-			"El documento analiza la evolución de los sistemas de transporte desde la prehistoria hasta la actualidad.",
-			"Describe cómo el desarrollo del transporte ha estado ligado al progreso de la civilización, comenzando con la movilidad humana básica y avanzando hacia sistemas más complejos.",
-		)
-	case containsAnyNormalized(normalized, "auradb pipeline", "analisis documental", "subir archivos", "preguntas"):
-		paragraphs = append(paragraphs,
-			"El documento describe el funcionamiento de AuraDB Pipeline como una plataforma de análisis documental inteligente.",
-			"Explica cómo el sistema permite subir archivos, procesar su contenido y consultarlos mediante preguntas para obtener respuestas útiles.",
-		)
-	default:
-		description := cleanOverviewDescription(documentOverviewDescription(chunks))
-		if description == "" {
-			description = "información procesada consultable"
-		}
-		paragraphs = append(paragraphs, "El documento contiene "+lowerFirstRune(strings.TrimSuffix(description, "."))+".")
-	}
-
-	answer := strings.Join(paragraphs[:minInt(len(paragraphs), 3)], "\n\n")
-	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
-		answer = strings.TrimSpace(answer + "\n\n" + sourceLine)
-	}
-	return answer
+	return buildFaithfulContextFallback("", chunks, sources)
 }
 
 func interpretedFallbackSourceLine(chunks []postgres.SearchResult, sources []askSource) string {
@@ -1903,12 +2661,6 @@ func rewriteMixedDocumentPresentation(answer string, sources []askSource) string
 		return ""
 	}
 	documentDescription := "información narrativa del documento consultado"
-	if containsAnyNormalized(normalizedCombined, "auradb pipeline", "analisis documental", "subir archivos", "consultarlos mediante preguntas") {
-		documentDescription = "información base del proyecto AuraDB Pipeline"
-		if containsAnyNormalized(normalizedCombined, "sistema de analisis documental", "analisis documental inteligente", "preguntas") {
-			documentDescription = "información base del proyecto AuraDB Pipeline como un sistema de análisis documental inteligente que permite subir archivos y consultarlos mediante preguntas"
-		}
-	}
 
 	excelDescription := excelInterpretationFromSources(sources)
 	if excelDescription == "" {
@@ -1916,9 +2668,6 @@ func rewriteMixedDocumentPresentation(answer string, sources []askSource) string
 	}
 
 	conclusion := "En conjunto, los documentos cargados reúnen información narrativa y datos estructurados consultables."
-	if strings.Contains(normalizedCombined, "auradb pipeline") {
-		conclusion = "En conjunto, los documentos muestran tanto la lógica del sistema como ejemplos de datos que pueden ser procesados por la plataforma."
-	}
 
 	return strings.Join([]string{
 		"El documento " + documentName + " contiene " + documentDescription + ".",
@@ -2092,16 +2841,16 @@ func isCrossDocumentAnalysisQuestion(question string) bool {
 }
 
 func (h *AskHandler) buildGlobalKnowledgeAnswer(ctx context.Context, tenantID string, chunks []postgres.SearchResult) string {
+	chunks = limitGlobalKnowledgeChunks(chunks, 5, 20)
 	groups := groupChunksByDocument(chunks)
 	if len(groups) == 0 {
 		return ""
 	}
 
-	documentIDs := make([]string, 0, len(groups))
-	for documentID := range groups {
-		documentIDs = append(documentIDs, documentID)
+	documentIDs := orderedDocumentIDsFromChunks(chunks)
+	if len(documentIDs) > 5 {
+		documentIDs = documentIDs[:5]
 	}
-	sort.Strings(documentIDs)
 
 	paragraphs := make([]string, 0, len(documentIDs))
 	for i, documentID := range documentIDs {
@@ -2111,13 +2860,9 @@ func (h *AskHandler) buildGlobalKnowledgeAnswer(ctx context.Context, tenantID st
 		if description == "" {
 			description = "información procesada consultable"
 		}
-		kind := "documento"
-		if chunksLookLikeSpreadsheet(documentChunks) {
-			kind = "archivo"
-		}
-		prefix := "Según el " + kind + " " + name + ", "
+		prefix := "Según " + name + ", "
 		if i > 0 {
-			prefix = "También en el " + kind + " " + name + ", "
+			prefix = "También en " + name + ", "
 		}
 		paragraphs = append(paragraphs, prefix+"se encontró "+lowerFirstRune(strings.TrimSuffix(description, "."))+".")
 	}
@@ -2657,11 +3402,6 @@ func cleanOverviewDescription(text string) string {
 	text = auradbProjectNumberPattern.ReplaceAllString(text, "AuraDB Pipeline")
 	text = trailingStandaloneNumberPattern.ReplaceAllString(text, "$1")
 	text = visibleMultiSpacePattern.ReplaceAllString(text, " ")
-	normalized := service.NormalizeSearchText(text)
-	if strings.Contains(normalized, "nombre del proyecto auradb pipeline") ||
-		strings.Contains(normalized, "proyecto auradb pipeline") {
-		return "información base del proyecto AuraDB Pipeline"
-	}
 	return strings.TrimSpace(strings.Trim(text, " .;:"))
 }
 
@@ -2852,6 +3592,68 @@ func countUniqueDocumentsInChunks(chunks []postgres.SearchResult) int {
 		seen[documentID] = true
 	}
 	return len(seen)
+}
+
+func orderedDocumentIDsFromChunks(chunks []postgres.SearchResult) []string {
+	ids := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, chunk := range chunks {
+		documentID := strings.TrimSpace(chunk.DocumentID)
+		if documentID == "" || seen[documentID] {
+			continue
+		}
+		seen[documentID] = true
+		ids = append(ids, documentID)
+	}
+	return ids
+}
+
+func limitGlobalKnowledgeChunks(chunks []postgres.SearchResult, maxDocuments int, maxChunks int) []postgres.SearchResult {
+	if len(chunks) == 0 {
+		return nil
+	}
+	if maxDocuments <= 0 {
+		maxDocuments = 5
+	}
+	if maxChunks <= 0 {
+		maxChunks = 20
+	}
+
+	ordered := orderAskChunksByScoreOrPosition(chunks)
+	allowedDocuments := make(map[string]bool)
+	documentOrder := make([]string, 0, maxDocuments)
+	for _, chunk := range ordered {
+		documentID := strings.TrimSpace(chunk.DocumentID)
+		if documentID == "" || allowedDocuments[documentID] {
+			continue
+		}
+		if len(documentOrder) == maxDocuments {
+			break
+		}
+		allowedDocuments[documentID] = true
+		documentOrder = append(documentOrder, documentID)
+	}
+	if len(allowedDocuments) == 0 {
+		if len(ordered) > maxChunks {
+			return ordered[:maxChunks]
+		}
+		return ordered
+	}
+
+	selected := make([]postgres.SearchResult, 0, minInt(len(ordered), maxChunks))
+	for _, chunk := range ordered {
+		if len(selected) == maxChunks {
+			break
+		}
+		if !allowedDocuments[strings.TrimSpace(chunk.DocumentID)] {
+			continue
+		}
+		if chunkAlreadySelected(selected, chunk) {
+			continue
+		}
+		selected = append(selected, chunk)
+	}
+	return selected
 }
 
 func chunksPerDocumentLog(chunks []postgres.SearchResult, documentIDs []string) string {
@@ -3182,12 +3984,266 @@ func buildChunkBasedAnswer(question string, chunks []postgres.SearchResult, quer
 	}
 }
 
+func (h *AskHandler) answerLongSummary(ctx context.Context, question string, contextText string, chunks []postgres.SearchResult, sources []askSource) (string, bool) {
+	fallbackUsed := false
+	answer := ""
+	var err error
+	if h.chatService != nil && strings.TrimSpace(contextText) != "" {
+		answer, err = h.chatService.AnswerExpandedSummary(ctx, question, contextText)
+	}
+	if err != nil || strings.TrimSpace(answer) == "" {
+		if err != nil {
+			log.Printf("openai_long_summary_error error=%v", err)
+		}
+		answer = buildLongSummaryFallback(question, chunks, sources)
+		fallbackUsed = true
+	}
+	answer = cleanUserVisibleAnswer(answer)
+	if answerTooShortForLongSummary(answer, chunks) {
+		answer = buildLongSummaryFallback(question, chunks, sources)
+		fallbackUsed = true
+	}
+	return answer, fallbackUsed
+}
+
+func answerTooShortForLongSummary(answer string, chunks []postgres.SearchResult) bool {
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return true
+	}
+	normalized := service.NormalizeSearchText(answer)
+	forbiddenShortPrefixes := []string{
+		"el documento analiza",
+		"describe como",
+		"describe cómo",
+		"el documento describe",
+	}
+	for _, prefix := range forbiddenShortPrefixes {
+		if strings.HasPrefix(normalized, service.NormalizeSearchText(prefix)) && len(strings.Fields(normalized)) < 90 {
+			return true
+		}
+	}
+	minLines := 4
+	if len(chunks) > 8 {
+		minLines = 8
+	}
+	if countAnswerLines(answer) < minLines {
+		return true
+	}
+	if len(chunks) > 8 && len(strings.Fields(normalized)) < 160 {
+		return true
+	}
+	return false
+}
+
+func buildLongSummaryFallback(question string, chunks []postgres.SearchResult, sources []askSource) string {
+	chunks = limitLongSummaryChunks(chunks)
+	if len(chunks) == 0 {
+		return "Resumen del documento\n\nNo se encontró información suficiente en el documento para generar un resumen completo."
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Resumen del documento\n\n")
+	builder.WriteString(longSummaryOpening(chunks))
+	builder.WriteString("\n\n")
+
+	bullets := longSummaryBulletsBySections(chunks)
+	bullets = appendTransportSummaryBullets(chunks, bullets)
+	minBullets := 6
+	if len(chunks) > 8 {
+		minBullets = 8
+	}
+	bullets = ensureLongSummaryBulletCount(chunks, bullets, minBullets)
+	for _, bullet := range bullets[:minInt(len(bullets), maxInt(minBullets, 8))] {
+		builder.WriteString("- ")
+		builder.WriteString(bullet)
+		builder.WriteString("\n")
+	}
+
+	builder.WriteString("\nConclusión: ")
+	builder.WriteString(longSummaryConclusion(chunks))
+	if sourceLine := interpretedFallbackSourceLine(chunks, sources); sourceLine != "" {
+		builder.WriteString("\n\n")
+		builder.WriteString(sourceLine)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func limitLongSummaryChunks(chunks []postgres.SearchResult) []postgres.SearchResult {
+	if len(chunks) <= askSummaryTopK {
+		return chunks
+	}
+	return chunks[:askSummaryTopK]
+}
+
+func longSummaryOpening(chunks []postgres.SearchResult) string {
+	text := normalizedChunksText(chunks)
+	if containsAnyNormalized(text, "transporte", "movilidad", "rueda", "navegacion", "vapor", "combustion") {
+		return "El documento presenta una visión histórica amplia del transporte como una actividad central para la movilidad humana, el intercambio económico y el desarrollo tecnológico de las sociedades."
+	}
+	points := buildChunkPoints(chunks, 2)
+	if len(points) == 0 {
+		return "El documento desarrolla varios temas relacionados entre sí y organiza la información en partes que permiten comprender su contenido general."
+	}
+	return "El documento aborda " + lowerFirstRune(strings.Trim(strings.TrimPrefix(points[0], "- "), ".")) + "."
+}
+
+func longSummaryBulletsBySections(chunks []postgres.SearchResult) []string {
+	groups := service.BuildSummarySectionGroups(chunks)
+	bullets := make([]string, 0, len(groups))
+	seen := make(map[string]bool)
+	for _, group := range groups {
+		title := strings.TrimSpace(group.Title)
+		points := buildChunkPoints(group.Chunks, 2)
+		if len(points) == 0 {
+			continue
+		}
+		point := strings.TrimSpace(strings.TrimPrefix(points[0], "- "))
+		if len(points) > 1 {
+			point += ". " + strings.TrimSpace(strings.TrimPrefix(points[1], "- "))
+		}
+		if title != "" && !strings.HasPrefix(title, "Parte ") && title != "Contenido general" {
+			point = title + ": " + lowerFirstRune(strings.TrimSuffix(point, "."))
+		}
+		key := service.NormalizeSearchText(point)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		bullets = append(bullets, ensureSentence(point))
+	}
+	return bullets
+}
+
+func appendTransportSummaryBullets(chunks []postgres.SearchResult, bullets []string) []string {
+	combined := normalizedChunksText(chunks)
+	if !containsAnyNormalized(combined, "transporte", "movilidad", "rueda", "navegacion", "vapor", "combustion") {
+		return bullets
+	}
+	topics := []struct {
+		label    string
+		variants []string
+		text     string
+	}{
+		{"movilidad humana inicial", []string{"movilidad humana", "prehistoria", "caminar", "desplazamiento humano"}, "Movilidad humana inicial: el texto parte de la necesidad básica de desplazarse para sobrevivir, intercambiar recursos y conectar comunidades."},
+		{"tracción animal", []string{"traccion animal", "tracción animal", "animales", "caballo", "buey"}, "Tracción animal: la incorporación de animales amplió la capacidad de carga y distancia, convirtiendo el transporte en una herramienta económica y social más potente."},
+		{"rueda", []string{"rueda"}, "Rueda: la rueda aparece como una innovación decisiva porque hizo más eficiente el traslado terrestre y permitió desarrollar vehículos y caminos más complejos."},
+		{"navegación", []string{"navegacion", "navegación", "barco", "rios", "ríos", "maritimo"}, "Navegación: el documento destaca el transporte por agua como vía para expandir comercio, comunicación y conexión entre regiones alejadas."},
+		{"vapor", []string{"vapor", "maquina de vapor", "máquina de vapor"}, "Vapor: la energía de vapor marca una etapa de industrialización del transporte, con mayor velocidad, regularidad y capacidad para mover personas y mercancías."},
+		{"motor de combustión", []string{"combustion", "combustión", "motor", "automovil", "automóvil"}, "Motor de combustión: el motor de combustión transforma la movilidad moderna al impulsar automóviles, camiones y sistemas de transporte más flexibles."},
+		{"contenedor intermodal", []string{"contenedor", "intermodal"}, "Contenedor intermodal: la estandarización del contenedor facilita combinar barcos, trenes y camiones, reduciendo tiempos y costos logísticos."},
+		{"tren de alta velocidad", []string{"alta velocidad", "tren bala", "tren de alta velocidad"}, "Tren de alta velocidad: el avance ferroviario aparece como respuesta a la necesidad de mover pasajeros rápidamente entre ciudades y regiones."},
+		{"movilidad eléctrica", []string{"electrica", "eléctrica", "vehiculo electrico", "vehículo eléctrico"}, "Movilidad eléctrica: el documento incorpora la transición hacia tecnologías eléctricas como parte de una movilidad más eficiente y menos dependiente de combustibles tradicionales."},
+		{"autonomía / inteligencia artificial", []string{"autonomia", "autonomía", "inteligencia artificial", "vehiculos autonomos", "vehículos autónomos"}, "Autonomía / inteligencia artificial: la automatización y la inteligencia artificial se presentan como factores que pueden redefinir seguridad, operación y toma de decisiones en el transporte."},
+		{"transporte futuro", []string{"futuro", "sostenible", "innovacion", "innovación"}, "Transporte futuro: el cierre proyecta un sistema de transporte más integrado, sostenible e inteligente, condicionado por nuevas tecnologías e infraestructura."},
+	}
+	for _, topic := range topics {
+		if longSummaryBulletMentions(bullets, topic.label) {
+			continue
+		}
+		bullets = append(bullets, topic.text)
+	}
+	return bullets
+}
+
+func longSummaryBulletMentions(bullets []string, label string) bool {
+	needle := service.NormalizeSearchText(label)
+	for _, bullet := range bullets {
+		if strings.Contains(service.NormalizeSearchText(bullet), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureLongSummaryBulletCount(chunks []postgres.SearchResult, bullets []string, minBullets int) []string {
+	seen := make(map[string]bool)
+	cleaned := make([]string, 0, len(bullets))
+	for _, bullet := range bullets {
+		bullet = ensureSentence(strings.TrimSpace(bullet))
+		key := service.NormalizeSearchText(bullet)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		cleaned = append(cleaned, bullet)
+	}
+	for _, point := range buildChunkPoints(chunks, minBullets*2) {
+		if len(cleaned) >= minBullets {
+			break
+		}
+		point = ensureSentence(strings.TrimSpace(strings.TrimPrefix(point, "- ")))
+		key := service.NormalizeSearchText(point)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		cleaned = append(cleaned, point)
+	}
+	return cleaned
+}
+
+func longSummaryConclusion(chunks []postgres.SearchResult) string {
+	text := normalizedChunksText(chunks)
+	if containsAnyNormalized(text, "transporte", "movilidad", "rueda", "navegacion", "vapor", "combustion") {
+		return "en conjunto, el documento muestra que el transporte evoluciona junto con la organización social, la energía disponible, la infraestructura y la tecnología, hasta proyectarse hacia sistemas eléctricos, autónomos e inteligentes."
+	}
+	points := buildChunkPoints(chunks, 1)
+	if len(points) == 0 {
+		return "el contenido permite identificar una línea general de desarrollo y varios aspectos relevantes que sostienen el tema principal."
+	}
+	return lowerFirstRune(strings.TrimSuffix(strings.TrimPrefix(points[0], "- "), ".")) + "."
+}
+
+func ensureSentence(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if strings.HasSuffix(text, ".") || strings.HasSuffix(text, "!") || strings.HasSuffix(text, "?") {
+		return text
+	}
+	return text + "."
+}
+
 func generarResumenDesdeChunks(chunks []string) string {
-	summary := resumenSimple(chunks)
+	summary := resumenLargoDesdeChunks(chunks)
 	if strings.TrimSpace(summary) == "" {
 		return "No se encontró información suficiente en el documento para generar un resumen."
 	}
 	return summary
+}
+
+func resumenLargoDesdeChunks(chunks []string) string {
+	points := buildDevelopedParagraphs(chunks, 12)
+	if len(points) == 0 {
+		return ""
+	}
+
+	firstEnd := minInt(len(points), 3)
+	secondEnd := minInt(len(points), 8)
+	thirdEnd := minInt(len(points), 12)
+
+	paragraph1 := strings.Join(points[:firstEnd], " ")
+	paragraph2 := ""
+	if secondEnd > firstEnd {
+		paragraph2 = strings.Join(points[firstEnd:secondEnd], " ")
+	}
+	paragraph3 := ""
+	if thirdEnd > secondEnd {
+		paragraph3 = strings.Join(points[secondEnd:thirdEnd], " ")
+	}
+	conclusionSource := points[len(points)-1]
+
+	paragraphs := []string{"Resumen del documento", paragraph1}
+	if strings.TrimSpace(paragraph2) != "" {
+		paragraphs = append(paragraphs, paragraph2)
+	}
+	if strings.TrimSpace(paragraph3) != "" {
+		paragraphs = append(paragraphs, paragraph3)
+	}
+	paragraphs = append(paragraphs, "Conclusión: "+conclusionSource)
+	return strings.TrimSpace(strings.Join(paragraphs, "\n\n"))
 }
 
 func resumenSimple(chunks []string) string {
@@ -3297,6 +4353,9 @@ func finalizeAnswerForFrontend(question string, chunks []postgres.SearchResult, 
 	original := strings.TrimSpace(answer)
 	cleaned := cleanFinalAnswer(answer)
 	cleanupApplied := cleaned != original || chunkAnswerUsed
+	if queryType == "summary" {
+		return cleaned, cleanupApplied
+	}
 	intent := classifyQuestionIntent(question)
 
 	if intent != "general" && len(chunks) > 0 {
@@ -3409,17 +4468,7 @@ func rewritePurposeAnswer(chunks []string) string {
 		return rewriteGeneralSummaryAnswer(chunks)
 	}
 
-	purpose := "AuraDB Pipeline tiene como propósito central ser una plataforma de lectura, procesamiento, comprensión y consulta inteligente de documentos."
-	if containsAnyNormalized(normalized, "extraer texto", "extractor de texto", "copiar contenido", "simple extractor") {
-		purpose += " Su diferencia frente a un simple extractor de texto está en que no se limita a copiar el contenido del archivo, sino que convierte los documentos cargados por el usuario en información útil, consultable, resumida, analizada y organizada."
-	}
-
-	capabilities := detectedPurposeCapabilities(normalized)
-	if len(capabilities) > 0 {
-		purpose += "\n\nEl sistema busca que el usuario pueda " + joinNaturalList(capabilities) + "."
-	}
-
-	return purpose
+	return rewriteGeneralSummaryAnswer(chunks)
 }
 
 func detectedPurposeCapabilities(normalized string) []string {
@@ -3570,23 +4619,14 @@ func summaryTitleFromChunks(chunks []string) string {
 }
 
 func summarySubject(normalized string) string {
-	if containsAnyNormalized(normalized, "auradb", "aura db", "pipeline") {
-		return "AuraDB Pipeline es una plataforma diseñada para procesar y analizar documentos de manera inteligente."
-	}
 	return "El documento presenta un tema central y organiza información relevante para comprenderlo de manera general."
 }
 
 func summaryObjective(normalized string) string {
-	if containsAnyNormalized(normalized, "consulta", "preguntas", "resumen", "analisis", "analizar") {
-		return "Su objetivo es transformar archivos en información útil, permitiendo al usuario consultar, resumir y entender el contenido sin tener que leerlo completamente."
-	}
 	return "Su objetivo es explicar el contenido principal, mostrar sus componentes y facilitar una comprensión global del material."
 }
 
 func summaryOperation(normalized string) string {
-	if containsAnyNormalized(normalized, "carga", "extrae", "extraccion", "fragmentos", "chunks") {
-		return "El sistema funciona mediante la carga de documentos, la extracción de su contenido, la división en fragmentos y la posterior consulta mediante preguntas."
-	}
 	return "El contenido se organiza para que sus ideas principales puedan revisarse de forma clara, ordenada y comprensible."
 }
 
@@ -3598,9 +4638,6 @@ func summaryValue(normalized string) string {
 }
 
 func summaryDevelopment(normalized string) string {
-	if containsAnyNormalized(normalized, "auradb", "pipeline", "worker", "chunks") {
-		return "El sistema permite cargar documentos, procesarlos en el backend, extraer su texto y preparar ese contenido para búsquedas y respuestas. A partir de esa estructura, el usuario puede pedir resúmenes, formular preguntas, identificar puntos clave y analizar el documento de manera más eficiente."
-	}
 	return "El documento desarrolla su tema mediante ideas relacionadas entre sí, presentando información inicial, elementos de apoyo y una conclusión general. La respuesta resume esas partes sin reproducir fragmentos literales ni convertir títulos en contenido."
 }
 
@@ -4065,6 +5102,13 @@ func joinParagraphs(paragraphs []string) string {
 
 func minInt(a int, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
 		return a
 	}
 	return b

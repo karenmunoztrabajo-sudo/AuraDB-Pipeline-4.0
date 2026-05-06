@@ -90,8 +90,12 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 	precisionMode := isPrecisionQuery(query) && queryType != "summary"
 	selectedDocumentIDs := normalizeDocumentIDs(documentIDs)
 	multiDocumentMode := len(selectedDocumentIDs) == 0 || len(selectedDocumentIDs) > 1
+	globalKnowledgeMode := len(selectedDocumentIDs) == 0
 	documentIDLog := strings.Join(selectedDocumentIDs, ",")
-	if len(selectedDocumentIDs) > 1 && topK > 20 {
+	if globalKnowledgeMode && topK > 20 {
+		topK = 20
+	}
+	if len(selectedDocumentIDs) > 1 && topK > 20 && queryType != "summary" {
 		topK = 20
 	}
 	if queryType == "summary" && topK < 4 {
@@ -107,6 +111,23 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 		topK = defaultSearchTopK
 	}
 	log.Printf("search_request query=%q normalized_question_for_retrieval=%q normalized_query=%q query_type=%q topK=%d document_id=%s selected_document_ids=%q multi_document_mode=%t modo_precision=%t main_terms_detected=%q main_entity_detected=%q entity_filter_applied=%t entity_extraction_mode=%q reason_entity_rejected=%q section_query_detected=%t section_term=%q topic_focused_retrieval=%t main_topic_term=%q", query, query, normalizedQuery, queryType, topK, firstDocumentID(selectedDocumentIDs), documentIDLog, multiDocumentMode, precisionMode, strings.Join(queryIntent.MainTerms, ","), queryIntent.MainEntity, entityFilterApplied, queryIntent.EntityExtractionMode, queryIntent.EntityRejectedReason, sectionQueryDetected, sectionTerm, topicFocus.Enabled, topicFocus.MainTerm)
+	if globalKnowledgeMode {
+		log.Printf("global_knowledge_mode=true")
+	}
+
+	if globalKnowledgeMode {
+		results, err := s.repo.SearchGlobalChunksByText(ctx, tenantID, query, topK)
+		if err != nil {
+			return nil, err
+		}
+		if len(results) > 20 {
+			results = results[:20]
+		}
+		log.Printf("global_chunks_found=%d", len(results))
+		log.Printf("documents_used=%d", countUniqueSearchResultDocuments(results))
+		log.Printf("search_result mode=global_text query=%q normalized_query=%q query_type=%q candidate_chunks=%d final_chunks=%d", query, normalizedQuery, queryType, len(results), len(results))
+		return results, nil
+	}
 
 	if queryType == "summary" {
 		return s.searchSummaryDirect(ctx, tenantID, query, topK, selectedDocumentIDs)
@@ -155,6 +176,9 @@ func (s *SearchService) SearchWithDocumentIDs(ctx context.Context, tenantID stri
 		return nil, err
 	}
 	log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, countUniqueSearchResultDocuments(items))
+	if globalKnowledgeMode {
+		log.Printf("global_knowledge_mode=true documents_scanned=%d", countUniqueSearchResultDocuments(items))
+	}
 
 	if len(items) == 0 {
 		results, err := s.searchTextFallback(ctx, tenantID, query, topK, selectedDocumentIDs, 0, precisionMode)
@@ -279,10 +303,10 @@ func (s *SearchService) searchSummaryDirect(ctx context.Context, tenantID string
 	}
 
 	if topK <= 0 {
-		topK = 20
+		topK = 30
 	}
-	if topK > 20 {
-		topK = 20
+	if topK > 30 {
+		topK = 30
 	}
 	if len(items) > topK {
 		items = items[:topK]
@@ -1068,11 +1092,16 @@ func isSummaryQuery(query string) bool {
 	normalizedQuery := NormalizeSearchText(query)
 	summaryPatterns := []string{
 		"resume la parte de",
+		"dame un resumen",
+		"resumen",
 		"resumen de",
 		"resumen del documento",
 		"resumir documento",
 		"resumir este documento",
 		"resume",
+		"explicame",
+		"explica",
+		"analiza",
 		"que dice sobre",
 		"explicame este documento",
 		"explicame el documento",

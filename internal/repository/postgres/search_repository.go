@@ -281,6 +281,113 @@ func (r *SearchRepository) GetChunksByTextByDocumentIDs(ctx context.Context, ten
 	return results, nil
 }
 
+func (r *SearchRepository) SearchGlobalChunksByText(ctx context.Context, tenantID string, searchText string, limit int) ([]SearchResult, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 20
+	}
+
+	terms := globalSearchTerms(searchText)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+
+	query := `
+		SELECT
+			c.id,
+			c.document_id,
+			COALESCE(c.section_title, ''),
+			c.content,
+			c.chunk_index,
+			(
+	`
+	args := []any{tenantID}
+	nextArg := 2
+	for i, term := range terms {
+		if i > 0 {
+			query += " + "
+		}
+		query += "CASE WHEN c.content ILIKE $" + strconv.Itoa(nextArg) + " THEN 1 ELSE 0 END"
+		args = append(args, "%"+term+"%")
+		nextArg++
+	}
+	query += `
+			)::float AS score
+		FROM chunks c
+		INNER JOIN documents d ON d.id = c.document_id
+		WHERE d.tenant_id = $1
+		  AND (
+	`
+	firstTermArg := 2
+	for i := range terms {
+		if i > 0 {
+			query += " OR "
+		}
+		query += "c.content ILIKE $" + strconv.Itoa(firstTermArg+i)
+	}
+	query += `
+		  )
+		ORDER BY score DESC, c.created_at DESC, c.document_id ASC, c.chunk_index ASC
+		LIMIT $` + strconv.Itoa(nextArg)
+	args = append(args, limit)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]SearchResult, 0)
+	for rows.Next() {
+		var item SearchResult
+		if err := rows.Scan(
+			&item.ChunkID,
+			&item.DocumentID,
+			&item.SectionTitle,
+			&item.Content,
+			&item.ChunkIndex,
+			&item.Score,
+		); err != nil {
+			return nil, err
+		}
+		results = append(results, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
+func globalSearchTerms(searchText string) []string {
+	rawTerms := searchTerms(searchText)
+	stopwords := map[string]bool{
+		"a": true, "al": true, "algo": true, "como": true, "con": true,
+		"cual": true, "cuales": true, "de": true, "del": true, "dime": true,
+		"documento": true, "documentos": true, "el": true, "en": true,
+		"esa": true, "ese": true, "eso": true, "esta": true, "este": true,
+		"esto": true, "hay": true, "informacion": true, "la": true, "las": true,
+		"lo": true, "los": true, "me": true, "mi": true, "para": true,
+		"por": true, "que": true, "se": true, "segun": true, "sobre": true,
+		"su": true, "sus": true, "tengo": true, "tiene": true, "un": true,
+		"una": true, "y": true,
+	}
+	terms := make([]string, 0, len(rawTerms))
+	seen := make(map[string]bool)
+	for _, term := range rawTerms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" || stopwords[term] || seen[term] {
+			continue
+		}
+		if len([]rune(term)) < 4 {
+			continue
+		}
+		seen[term] = true
+		terms = append(terms, term)
+	}
+	return terms
+}
+
 func searchTerms(searchText string) []string {
 	seen := make(map[string]bool)
 	terms := make([]string, 0)

@@ -181,7 +181,7 @@ func (s *OllamaChatService) answerWithPrompt(ctx context.Context, question strin
 func trimContextForQuery(question string, contextText string) string {
 	maxContextRunes := 18000
 	if QueryTypeForQuery(question) == "summary" {
-		maxContextRunes = 32000
+		maxContextRunes = 50000
 	}
 
 	runes := []rune(strings.TrimSpace(contextText))
@@ -196,9 +196,9 @@ func promptConfigForQueryType(queryType string) answerPromptConfig {
 	switch queryType {
 	case "summary":
 		return answerPromptConfig{
-			SystemPrompt: "Resume el documento usando únicamente el contexto recuperado. Reescribe y sintetiza información visible del documento sin agregar comentarios genéricos.",
-			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- La respuesta solo puede contener texto reescrito del documento o síntesis directa de ese texto.\n- No agregues explicaciones de relevancia, función, importancia, aporte o interpretación si no están explícitas en el contexto.\n- No repitas estructuras ni concatenes frases fijas.\n- No uses referencias internas, identificadores ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo." + interpretationRule,
-			NumPredict:   1800,
+			SystemPrompt: "Resume y explica el documento usando únicamente el contexto recuperado. Desarrolla una respuesta amplia, estructurada y suficiente para documentos largos.",
+			UserRules:    "Reglas obligatorias:\n- Usa solo el contexto recuperado.\n- No devuelvas un resumen corto si el contexto contiene varias partes o secciones.\n- Si hay muchas secciones, menciona varias secciones o partes principales.\n- La respuesta solo puede contener texto reescrito del documento o síntesis directa de ese texto.\n- No uses referencias internas, identificadores ni etiquetas técnicas.\n- No inventes información ni agregues conocimiento externo.\n\nFormato obligatorio:\nResumen del documento\n\nPrimer parrafo: tema general del documento.\n\nSegundo parrafo: desarrollo por partes principales.\n\nTercer parrafo: aspectos relevantes, datos o ideas destacadas.\n\nConclusión: cierre interpretativo respaldado por el contexto.\n\nFuente: nombre del documento si aparece." + interpretationRule,
+			NumPredict:   2400,
 		}
 	case "section":
 		return answerPromptConfig{
