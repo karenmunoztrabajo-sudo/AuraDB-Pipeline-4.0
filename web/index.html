@@ -470,6 +470,48 @@
       white-space: nowrap;
     }
 
+    .collection-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      flex: 0 1 auto;
+    }
+
+    .collection-controls label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .collection-controls select,
+    .collection-controls input {
+      height: 32px;
+      width: auto;
+      min-width: 130px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: #ffffff;
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .collection-controls input {
+      max-width: 150px;
+      padding: 0 9px;
+    }
+
+    .collection-status {
+      max-width: 180px;
+      color: var(--accent-strong);
+      font-size: 12px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .attach-button {
       width: 40px;
       min-width: 40px;
@@ -562,6 +604,143 @@
     .document-remove:hover {
       background: #eef2f5;
       color: var(--danger);
+    }
+
+    .document-favorite {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: #b9c2cf;
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .document-favorite.active {
+      color: #d99a00;
+    }
+
+    .favorites-panel {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    .favorites-panel.visible {
+      display: flex;
+    }
+
+    .favorites-title {
+      flex: 0 0 auto;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .favorites-list {
+      display: flex;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .favorite-item {
+      width: auto;
+      max-width: 170px;
+      padding: 4px 7px;
+      border: 1px solid #efd48b;
+      border-radius: 999px;
+      background: #fffaf0;
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .document-tag-add {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #ffffff;
+      color: var(--accent-strong);
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    .document-tags {
+      display: flex;
+      gap: 3px;
+      max-width: 160px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .document-tag {
+      width: auto;
+      padding: 2px 5px;
+      border: 0;
+      border-radius: 999px;
+      background: #eef7f5;
+      color: var(--accent-strong);
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .document-tag-remove {
+      margin-left: 3px;
+      color: var(--muted);
+    }
+
+    .tags-panel {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    .tags-panel.visible {
+      display: flex;
+    }
+
+    .tags-title {
+      flex: 0 0 auto;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .tags-list {
+      display: flex;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .tag-filter-item {
+      width: auto;
+      max-width: 130px;
+      padding: 4px 7px;
+      border: 1px solid #c7e4df;
+      border-radius: 999px;
+      background: #f2fbf9;
+      color: var(--accent-strong);
+      font-size: 11px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .query-action {
@@ -1131,6 +1310,18 @@
 
       .file-area {
         gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .collection-controls {
+        width: 100%;
+        flex-wrap: wrap;
+      }
+
+      .collection-controls select,
+      .collection-controls input {
+        min-width: 0;
+        flex: 1 1 130px;
       }
 
       .composer {
@@ -1190,10 +1381,27 @@
         <div class="composer-doc-row">
           <div class="file-area">
             <input type="file" id="file" multiple hidden />
-            <span id="currentDocumentName" class="file-status">Consulta global en la base de conocimiento</span>
+            <div class="collection-controls">
+              <label for="collectionSelect">Colección activa</label>
+              <select id="collectionSelect" onchange="handleCollectionChange()">
+                <option value="">Sin colección</option>
+              </select>
+              <input id="collectionNameInput" type="text" placeholder="Nueva colección" />
+              <button type="button" class="secondary-button compact-button" onclick="createCollection()">Crear</button>
+              <span id="collectionStatus" class="collection-status"></span>
+            </div>
+            <span id="currentDocumentName" class="file-status">Sube uno o varios documentos para consultar.</span>
             <div id="documentList" class="document-list"></div>
             <div id="uploadResult" class="status"></div>
           </div>
+        </div>
+        <div id="favoritesPanel" class="favorites-panel">
+          <span class="favorites-title">Favoritos</span>
+          <div id="favoritesList" class="favorites-list"></div>
+        </div>
+        <div id="tagsPanel" class="tags-panel">
+          <span class="tags-title">Tags</span>
+          <div id="tagsList" class="tags-list"></div>
         </div>
         <div class="composer-input-row">
           <button type="button" id="uploadButton" class="secondary-button compact-button attach-button" title="Adjuntar documento" aria-label="Adjuntar documento">
@@ -1237,15 +1445,65 @@ const TENANT_ID = "14168b79-719b-4578-832a-d571bc2da2d5";
 const CURRENT_DOCUMENT_ID_KEY = "auradb.currentDocumentId";
 const CURRENT_DOCUMENT_NAME_KEY = "auradb.currentDocumentName";
 const CURRENT_DOCUMENTS_KEY = "auradb.currentDocuments";
+const ACTIVE_COLLECTION_ID_KEY = "auradb.activeCollectionId";
+const ACTIVE_COLLECTION_NAME_KEY = "auradb.activeCollectionName";
 const CURRENT_QUERY_TEXT_KEY = "auradb.currentQueryText";
 const LAST_ANSWER_TEXT_KEY = "auradb.lastAnswerText";
 const HISTORY_FAVORITES_KEY = "auradb.historyFavorites";
 const HISTORY_HIDDEN_IDS_KEY = "auradb.historyHiddenIds";
 const HISTORY_PANEL_OPEN_KEY = "auradb.historyPanelOpen";
 
+const HARD_RESET_STORAGE_KEYS = [
+  "auradb.currentDocumentId",
+  "auradb.currentDocumentName",
+  "auradb.documentsLoaded",
+  "auradb.currentDocuments",
+  "auradb.activeCollectionId",
+  "auradb.activeCollectionName",
+  "auradb.chatMessages",
+  "auradb.messages",
+  "auradb.lastQuestion",
+  "auradb.lastDocumentIds",
+  "auradb.lastDocumentId",
+  "auradb.lastAnswerText",
+  "auradb.currentQueryText",
+  "auradb.currentConversation",
+  "auradb.currentChat",
+  "auradb.loadedDocuments",
+  "auradb.activeDocumentIds"
+];
+
+function hardResetStorage() {
+  [sessionStorage, localStorage].forEach(function (storage) {
+    try {
+      HARD_RESET_STORAGE_KEYS.forEach(function (key) {
+        storage.removeItem(key);
+      });
+      Object.keys(storage).forEach(function (key) {
+        if (key === AUTH_TOKEN_KEY) {
+          return;
+        }
+        if (/^auradb\./i.test(key)) {
+          storage.removeItem(key);
+        }
+      });
+    } catch (err) {}
+  });
+}
+
+hardResetStorage();
+
 let currentDocumentId = "";
 let currentDocumentName = "";
 let loadedDocuments = [];
+let documentsLoaded = [];
+let chatMessages = [];
+let collections = [];
+let favoriteDocuments = [];
+let documentTags = {};
+let activeCollectionId = "";
+let activeCollectionName = "";
+let activeTagFilter = "";
 let pendingDeleteHistoryId = "";
 let openHistoryMenuId = "";
 let answerFeedbackTimeout = null;
@@ -1289,6 +1547,515 @@ function authHeaders() {
   };
 }
 
+function persistActiveCollection() {
+  return;
+}
+
+function collectionById(collectionId) {
+  return collections.find(function (item) {
+    return item.id === collectionId;
+  }) || null;
+}
+
+function dedupeDocuments(docs) {
+  const map = new Map();
+  for (const doc of docs || []) {
+    const id = doc.id || doc.document_id;
+    if (!id) continue;
+    if (!map.has(id)) map.set(id, doc);
+  }
+  return Array.from(map.values());
+}
+
+function syncLoadedDocumentsFromDocumentsLoaded() {
+  const before = Array.isArray(documentsLoaded) ? documentsLoaded.length : 0;
+  documentsLoaded = dedupeDocuments(documentsLoaded);
+  console.log("documents_loaded_before_dedupe", before);
+  console.log("documents_loaded_after_dedupe", documentsLoaded.length);
+  loadedDocuments = documentsLoaded.slice();
+}
+
+function renderCollectionSelector() {
+  const select = document.getElementById("collectionSelect");
+  if (!select) {
+    return;
+  }
+  const currentValue = activeCollectionId;
+  select.innerHTML = "";
+
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = "Sin colección";
+  select.appendChild(empty);
+
+  collections.forEach(function (collection) {
+    const option = document.createElement("option");
+    option.value = collection.id || "";
+    option.textContent = collection.name || "Colección";
+    select.appendChild(option);
+  });
+
+  select.value = currentValue;
+}
+
+function updateCollectionStatus() {
+  const status = document.getElementById("collectionStatus");
+  if (!status) {
+    return;
+  }
+  if (!activeCollectionId) {
+    status.textContent = "";
+    return;
+  }
+  const collection = collectionById(activeCollectionId);
+  const name = (collection && collection.name) || activeCollectionName || "Colección";
+  const count = loadedDocuments.length || (collection && collection.document_count) || 0;
+  status.textContent = count > 0 ? "Colección activa: " + name + " · " + count + " documentos listos" : "Colección activa: " + name;
+}
+
+function showCollectionError(message) {
+  const status = document.getElementById("collectionStatus");
+  if (status) {
+    status.textContent = message || "No se pudo crear la colección.";
+  }
+  setUploadMessage(message || "No se pudo crear la colección.", true);
+}
+
+function upsertCollection(collection) {
+  if (!collection || !collection.id) {
+    return;
+  }
+  const normalized = {
+    id: collection.id,
+    name: collection.name || "Colección",
+    document_count: collection.document_count || 0
+  };
+  const index = collections.findIndex(function (item) {
+    return item.id === normalized.id;
+  });
+  if (index >= 0) {
+    collections[index] = Object.assign({}, collections[index], normalized);
+  } else {
+    collections.push(normalized);
+  }
+  collections.sort(function (a, b) {
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+}
+
+async function loadCollections() {
+  if (!getAuthToken()) {
+    return;
+  }
+  try {
+    const res = await fetch(API + "/collections", {
+      method: "GET",
+      headers: authHeaders()
+    });
+    if (!res.ok) {
+      return;
+    }
+    const data = await res.json();
+    collections = Array.isArray(data) ? data : [];
+    if (activeCollectionId && !collectionById(activeCollectionId)) {
+      activeCollectionId = "";
+      activeCollectionName = "";
+      persistActiveCollection();
+    }
+    const active = collectionById(activeCollectionId);
+    if (active) {
+      activeCollectionName = active.name || activeCollectionName;
+      persistActiveCollection();
+    }
+    renderCollectionSelector();
+    updateCollectionStatus();
+    if (activeCollectionId) {
+      await loadCollectionDocuments(activeCollectionId);
+    }
+  } catch (err) {
+    console.warn("collections load error:", err);
+  }
+}
+
+async function createCollection() {
+  const input = document.getElementById("collectionNameInput");
+  const name = input ? input.value.trim() : "";
+  if (!name) {
+    showCollectionError("Escribe un nombre de colección.");
+    return;
+  }
+  try {
+    console.log("collection_create_started");
+    const res = await fetch(API + "/collections", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ name: name })
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    const collection = await res.json();
+    if (!collection || !collection.id) {
+      throw new Error("Respuesta inválida al crear colección.");
+    }
+    upsertCollection(collection);
+    activeCollectionId = collection.id;
+    activeCollectionName = collection.name || name;
+    persistActiveCollection();
+    renderCollectionSelector();
+    const select = document.getElementById("collectionSelect");
+    if (select) {
+      select.value = activeCollectionId;
+    }
+    updateCollectionStatus();
+    console.log("collection_create_success id=" + activeCollectionId + " name=" + activeCollectionName);
+    console.log("active_collection_id=" + activeCollectionId);
+    if (input) input.value = "";
+    setUploadMessage("Colección activa: " + activeCollectionName, false, "ready");
+    loadCollections();
+  } catch (err) {
+    console.error("collection_create_error:", err);
+    showCollectionError("No se pudo crear la colección.");
+  }
+}
+
+async function handleCollectionChange() {
+  const select = document.getElementById("collectionSelect");
+  activeCollectionId = select ? select.value : "";
+  activeTagFilter = "";
+  const active = collectionById(activeCollectionId);
+  const selectedLabel = select && select.selectedOptions && select.selectedOptions.length ? select.selectedOptions[0].textContent : "";
+  activeCollectionName = active ? active.name : (selectedLabel && selectedLabel !== "Sin colección" ? selectedLabel : "");
+  console.log("collection_selected", activeCollectionId);
+  persistActiveCollection();
+  if (!activeCollectionId) {
+    documentsLoaded = [];
+    loadedDocuments = [];
+    renderDocumentChips();
+    updateCollectionStatus();
+    return;
+  }
+  await loadCollectionDocuments(activeCollectionId);
+}
+
+async function loadCollectionDocuments(collectionId) {
+  if (!collectionId || !getAuthToken()) {
+    return;
+  }
+  try {
+    const res = await fetch("http://localhost:8080/collections/" + encodeURIComponent(collectionId) + "/documents", {
+      method: "GET",
+      headers: authHeaders()
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    const data = await res.json();
+    console.log("collection_documents_response", data);
+    documentTags = {};
+    const responseDocuments = Array.isArray(data) ? data : (Array.isArray(data.documents) ? data.documents : []);
+    const collectionDocs = responseDocuments.map(function (item) {
+      return {
+        id: item.id || item.document_id || "",
+        name: item.original_name || item.name || item.document_name || "Documento cargado",
+        collection_id: collectionId,
+        is_favorite: !!item.is_favorite
+      };
+    }).filter(function (item) { return item.id; });
+    documentsLoaded = dedupeDocuments(collectionDocs);
+    syncLoadedDocumentsFromDocumentsLoaded();
+    console.log("collection_documents_loaded", documentsLoaded);
+    favoriteDocuments = favoriteDocuments.filter(function (favorite) {
+      return !documentsLoaded.some(function (documentInfo) { return documentInfo.id === favorite.id; });
+    });
+    documentsLoaded.forEach(function (documentInfo) {
+      if (documentInfo.is_favorite) {
+        favoriteDocuments.push({
+          id: documentInfo.id,
+          name: documentInfo.name,
+          collection_id: documentInfo.collection_id || ""
+        });
+      }
+    });
+    syncCurrentDocumentFromList();
+    loadTagsForLoadedDocuments();
+    renderDocumentChips();
+    updateCollectionStatus();
+    const collectionName = activeCollectionName || ((collectionById(collectionId) || {}).name) || "La colección";
+    setUploadMessage(documentsLoaded.length ? "Colección activa: " + collectionName + " · " + documentsLoaded.length + " documentos listos" : "La colección " + collectionName + " no tiene documentos asociados.", false, "ready");
+  } catch (err) {
+    console.error("collection_documents_load_error:", err);
+    setUploadMessage("No se pudieron cargar los documentos de la colección.", true);
+  }
+}
+
+function favoriteById(documentId) {
+  return favoriteDocuments.find(function (item) {
+    return item.id === documentId;
+  }) || null;
+}
+
+function isFavoriteDocument(documentId) {
+  return !!favoriteById(documentId);
+}
+
+async function loadFavorites() {
+  if (!getAuthToken()) {
+    favoriteDocuments = [];
+    renderFavoritesPanel();
+    return;
+  }
+  try {
+    const res = await fetch(API + "/documents/favorites", {
+      method: "GET",
+      headers: authHeaders()
+    });
+    if (!res.ok) {
+      return;
+    }
+    const data = await res.json();
+    favoriteDocuments = Array.isArray(data) ? data.map(function (item) {
+      return {
+        id: item.id || "",
+        name: item.original_name || item.name || "Documento cargado",
+        collection_id: item.collection_id || ""
+      };
+    }).filter(function (item) { return item.id; }) : [];
+    renderFavoritesPanel();
+    renderCurrentDocumentName();
+  } catch (err) {
+    console.warn("favorites load error:", err);
+  }
+}
+
+async function toggleDocumentFavorite(documentId, favorite) {
+  documentId = (documentId || "").trim();
+  if (!documentId || !getAuthToken()) {
+    console.error("favorite_update_error", { documentId: documentId, hasToken: !!getAuthToken() });
+    return;
+  }
+  try {
+    const url = API + "/documents/" + encodeURIComponent(documentId) + "/favorite";
+    const res = await fetch(url, {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ favorite: !!favorite })
+    });
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error("favorite_update_error", {
+        url: url,
+        status: res.status,
+        response: errorText,
+        documentId: documentId,
+        favorite: !!favorite
+      });
+      throw new Error(errorText || "favorite update failed");
+    }
+    if (favorite) {
+      const existing = loadedDocuments.find(function (item) { return item.id === documentId; }) || {};
+      if (!favoriteById(documentId)) {
+        favoriteDocuments.push({
+          id: documentId,
+          name: existing.name || "Documento cargado",
+          collection_id: existing.collection_id || ""
+        });
+      }
+    } else {
+      favoriteDocuments = favoriteDocuments.filter(function (item) {
+        return item.id !== documentId;
+      });
+    }
+    renderFavoritesPanel();
+    renderCurrentDocumentName();
+    loadFavorites();
+  } catch (err) {
+    console.error("favorite_update_error", err);
+    setUploadMessage("No se pudo actualizar favorito.", true);
+  }
+}
+
+function renderFavoritesPanel() {
+  const panel = document.getElementById("favoritesPanel");
+  const list = document.getElementById("favoritesList");
+  if (!panel || !list) {
+    return;
+  }
+  list.innerHTML = "";
+  panel.classList.toggle("visible", favoriteDocuments.length > 0);
+  favoriteDocuments.forEach(function (documentInfo) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "favorite-item";
+    button.title = documentInfo.name || "Documento favorito";
+    button.textContent = "⭐ " + (documentInfo.name || "Documento cargado");
+    button.onclick = function () {
+      addLoadedDocument({
+        id: documentInfo.id,
+        name: documentInfo.name || "Documento cargado",
+        collection_id: documentInfo.collection_id || ""
+      });
+      syncCurrentDocumentFromList();
+      renderCurrentDocumentName();
+      setUploadMessage("Documento favorito cargado para consultar.", false, "ready");
+    };
+    list.appendChild(button);
+  });
+}
+
+function normalizeTagInput(tag) {
+  return String(tag || "").trim().replace(/^#/, "").toLowerCase().replace(/\s+/g, "-");
+}
+
+async function loadDocumentTags(documentId) {
+  if (!documentId || !getAuthToken()) {
+    return [];
+  }
+  try {
+    const res = await fetch(API + "/documents/" + encodeURIComponent(documentId) + "/tags", {
+      method: "GET",
+      headers: authHeaders()
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    const data = await res.json();
+    const tags = Array.isArray(data) ? data.map(function (item) {
+      return item.tag || "";
+    }).filter(Boolean) : [];
+    documentTags[documentId] = tags;
+    return tags;
+  } catch (err) {
+    console.warn("document_tags_load_error", err);
+    return [];
+  }
+}
+
+async function loadTagsForLoadedDocuments() {
+  const ids = loadedDocuments.map(function (item) { return item.id; }).filter(Boolean);
+  await Promise.all(ids.map(loadDocumentTags));
+  renderCurrentDocumentName();
+  renderTagsPanel();
+}
+
+async function addDocumentTag(documentId) {
+  const tag = normalizeTagInput(window.prompt("Tag del documento"));
+  if (!tag || !documentId || !getAuthToken()) {
+    return;
+  }
+  try {
+    const res = await fetch(API + "/documents/" + encodeURIComponent(documentId) + "/tags", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ tag: tag })
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    await loadDocumentTags(documentId);
+    renderCurrentDocumentName();
+    renderTagsPanel();
+  } catch (err) {
+    console.error("document_tag_add_error", err);
+    setUploadMessage("No se pudo agregar el tag.", true);
+  }
+}
+
+async function removeDocumentTag(documentId, tag) {
+  tag = normalizeTagInput(tag);
+  if (!tag || !documentId || !getAuthToken()) {
+    return;
+  }
+  try {
+    const res = await fetch(API + "/documents/" + encodeURIComponent(documentId) + "/tags?tag=" + encodeURIComponent(tag), {
+      method: "DELETE",
+      headers: authHeaders()
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    await loadDocumentTags(documentId);
+    renderCurrentDocumentName();
+    renderTagsPanel();
+  } catch (err) {
+    console.error("document_tag_remove_error", err);
+    setUploadMessage("No se pudo eliminar el tag.", true);
+  }
+}
+
+function visibleTags() {
+  const seen = {};
+  const result = [];
+  Object.keys(documentTags).forEach(function (documentId) {
+    (documentTags[documentId] || []).forEach(function (tag) {
+      if (!seen[tag]) {
+        seen[tag] = true;
+        result.push(tag);
+      }
+    });
+  });
+  return result.sort();
+}
+
+function renderTagsPanel() {
+  const panel = document.getElementById("tagsPanel");
+  const list = document.getElementById("tagsList");
+  if (!panel || !list) {
+    return;
+  }
+  const tags = visibleTags();
+  panel.classList.toggle("visible", tags.length > 0);
+  list.innerHTML = "";
+  tags.forEach(function (tag) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tag-filter-item";
+    button.textContent = "#" + tag;
+    button.onclick = function () {
+      loadDocumentsByTag(tag);
+    };
+    list.appendChild(button);
+  });
+}
+
+async function loadDocumentsByTag(tag) {
+  tag = normalizeTagInput(tag);
+  if (!tag || !getAuthToken()) {
+    return;
+  }
+  activeTagFilter = tag;
+  activeCollectionId = "";
+  activeCollectionName = "";
+  try {
+    const res = await fetch(API + "/tags/" + encodeURIComponent(tag) + "/documents", {
+      method: "GET",
+      headers: authHeaders()
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    const data = await res.json();
+    documentTags = {};
+    documentsLoaded = Array.isArray(data) ? data.map(function (item) {
+      return {
+        id: item.id || "",
+        name: item.original_name || item.name || "Documento cargado",
+        collection_id: item.collection_id || ""
+      };
+    }).filter(function (item) { return item.id; }) : [];
+    syncLoadedDocumentsFromDocumentsLoaded();
+    syncCurrentDocumentFromList();
+    await loadTagsForLoadedDocuments();
+    renderCollectionSelector();
+    updateCollectionStatus();
+    renderDocumentChips();
+    setUploadMessage(loadedDocuments.length ? "Documentos con #" + tag + " listos para consultar." : "No hay documentos con #" + tag + ".", false, "ready");
+  } catch (err) {
+    console.error("tag_documents_load_error", err);
+    setUploadMessage("No se pudieron cargar documentos por tag.", true);
+  }
+}
+
 function showLogin() {
   document.getElementById('loginView').classList.remove('hidden');
   document.getElementById('appView').classList.add('hidden');
@@ -1299,8 +2066,13 @@ function showApp() {
   document.getElementById('loginView').classList.add('hidden');
   document.getElementById('appView').classList.remove('hidden');
   initializeFreshAppState();
-  restoreHistoryPanelState();
-  loadAskHistory();
+  loadFavorites();
+  historyPanelOpen = false;
+  renderHistoryPanel();
+  const historyContainer = document.getElementById('historyResult');
+  if (historyContainer) {
+    historyContainer.innerHTML = "";
+  }
 }
 
 function toggleSessionMenu() {
@@ -1342,19 +2114,8 @@ function handleHistoryClickOutside(event) {
   }
 }
 
-function restoreHistoryPanelState() {
-  try {
-    historyPanelOpen = sessionStorage.getItem(HISTORY_PANEL_OPEN_KEY) === "true";
-  } catch (err) {
-    historyPanelOpen = false;
-  }
-  renderHistoryPanel();
-}
-
 function persistHistoryPanelState() {
-  try {
-    sessionStorage.setItem(HISTORY_PANEL_OPEN_KEY, historyPanelOpen ? "true" : "false");
-  } catch (err) {}
+  return;
 }
 
 function renderHistoryPanel() {
@@ -1408,6 +2169,17 @@ async function login() {
 function logout() {
   document.getElementById('sessionMenu').classList.add('hidden');
   clearAuthToken();
+  activeCollectionId = "";
+  activeCollectionName = "";
+  activeTagFilter = "";
+  collections = [];
+  favoriteDocuments = [];
+  documentTags = {};
+  persistActiveCollection();
+  renderCollectionSelector();
+  updateCollectionStatus();
+  renderFavoritesPanel();
+  renderTagsPanel();
   clearDocumentState();
   document.getElementById('askQuery').value = "";
   document.getElementById('historyResult').innerHTML = "";
@@ -1486,6 +2258,7 @@ function appendChatMessage(role, content, options) {
 
   message.appendChild(bubble);
   container.appendChild(message);
+  chatMessages.push({ role: role, content: content || "" });
   scrollChatToBottom();
   return id;
 }
@@ -1675,31 +2448,17 @@ function saveCurrentDocument(documentId, documentName) {
   currentDocumentId = documentId || "";
   if (currentDocumentId) {
     currentDocumentName = documentName || "Documento cargado";
-    loadedDocuments = [{ id: currentDocumentId, name: currentDocumentName }];
+    documentsLoaded = dedupeDocuments([{ id: currentDocumentId, name: currentDocumentName }]);
   } else {
     currentDocumentName = "";
-    loadedDocuments = [];
+    documentsLoaded = [];
   }
+  syncLoadedDocumentsFromDocumentsLoaded();
   saveLoadedDocuments();
-  try {
-    if (currentDocumentId) {
-      sessionStorage.setItem(CURRENT_DOCUMENT_ID_KEY, currentDocumentId);
-      sessionStorage.setItem(CURRENT_DOCUMENT_NAME_KEY, currentDocumentName);
-    } else {
-      sessionStorage.removeItem(CURRENT_DOCUMENT_ID_KEY);
-      sessionStorage.removeItem(CURRENT_DOCUMENT_NAME_KEY);
-    }
-  } catch (err) {}
 }
 
 function saveLoadedDocuments() {
-  try {
-    if (loadedDocuments.length) {
-      sessionStorage.setItem(CURRENT_DOCUMENTS_KEY, JSON.stringify(loadedDocuments));
-    } else {
-      sessionStorage.removeItem(CURRENT_DOCUMENTS_KEY);
-    }
-  } catch (err) {}
+  return;
 }
 
 function syncCurrentDocumentFromList() {
@@ -1711,41 +2470,67 @@ function syncCurrentDocumentFromList() {
     currentDocumentName = "";
   }
   saveLoadedDocuments();
-  try {
-    if (currentDocumentId) {
-      sessionStorage.setItem(CURRENT_DOCUMENT_ID_KEY, currentDocumentId);
-      sessionStorage.setItem(CURRENT_DOCUMENT_NAME_KEY, currentDocumentName);
-    } else {
-      sessionStorage.removeItem(CURRENT_DOCUMENT_ID_KEY);
-      sessionStorage.removeItem(CURRENT_DOCUMENT_NAME_KEY);
-    }
-  } catch (err) {}
-}
-
-function restoreCurrentDocumentId() {
-  currentDocumentId = "";
-  currentDocumentName = "";
-  loadedDocuments = [];
-  renderCurrentDocumentName();
 }
 
 function initializeFreshAppState() {
+  resetHardState();
+}
+
+function resetHardState(message) {
+  hardResetStorage();
   currentDocumentId = "";
   currentDocumentName = "";
   loadedDocuments = [];
+  documentsLoaded = [];
+  chatMessages = [];
+  collections = [];
+  lastHistoryItems = [];
+  favoriteDocuments = [];
+  activeCollectionId = "";
+  activeCollectionName = "";
+  chatMessageSeq = 0;
+  currentAskController = null;
+  currentTypingTimer = null;
+  currentLoadingMessageId = "";
+  isAsking = false;
 
   const fileInput = document.getElementById("file");
   if (fileInput) fileInput.value = "";
 
   const query = document.getElementById("askQuery");
-  if (query) query.value = "";
+  if (query) {
+    query.value = "";
+    query.style.height = "48px";
+  }
 
-  resetChatThread();
+  resetChatThread(message);
+  const documentList = document.getElementById("documentList");
+  if (documentList) {
+    documentList.innerHTML = "";
+  }
+  const collectionSelect = document.getElementById("collectionSelect");
+  if (collectionSelect) {
+    collectionSelect.innerHTML = '<option value="">Sin colección</option>';
+    collectionSelect.value = "";
+  }
+  const collectionStatus = document.getElementById("collectionStatus");
+  if (collectionStatus) {
+    collectionStatus.textContent = "";
+  }
+  const historyContainer = document.getElementById('historyResult');
+  if (historyContainer) {
+    historyContainer.innerHTML = "";
+  }
+  historyPanelOpen = false;
+  renderHistoryPanel();
 
   clearPersistedDocumentState();
   clearPersistedQueryState();
+  renderCollectionSelector();
+  updateCollectionStatus();
   renderCurrentDocumentName();
-  setUploadMessage("Consulta global en la base de conocimiento", false, "ready");
+  renderFavoritesPanel();
+  setUploadMessage("Sube uno o varios documentos para consultar.", false, "ready");
 }
 
 function clearDocumentState() {
@@ -1760,6 +2545,7 @@ function resetUploadDocumentState() {
   currentDocumentId = "";
   currentDocumentName = "";
   loadedDocuments = [];
+  documentsLoaded = [];
   saveCurrentDocument("", "");
   resetChatThread();
   persistLastAnswer("");
@@ -1769,22 +2555,11 @@ function persistQueryState() {
   return;
 }
 
-function restoreQueryState() {
-  document.getElementById('askQuery').value = "";
-}
-
 function persistLastAnswer(answerText) {
   try {
-    if (answerText) {
-      sessionStorage.setItem(LAST_ANSWER_TEXT_KEY, answerText);
-    } else {
-      sessionStorage.removeItem(LAST_ANSWER_TEXT_KEY);
-    }
+    sessionStorage.removeItem(LAST_ANSWER_TEXT_KEY);
+    localStorage.removeItem(LAST_ANSWER_TEXT_KEY);
   } catch (err) {}
-}
-
-function restoreLastAnswer() {
-  resetChatThread();
 }
 
 function clearPersistedQueryState() {
@@ -1808,44 +2583,7 @@ function clearPersistedDocumentState() {
 }
 
 function clearCurrentChatStorage() {
-  const exactKeys = [
-    CURRENT_DOCUMENT_ID_KEY,
-    CURRENT_DOCUMENT_NAME_KEY,
-    CURRENT_DOCUMENTS_KEY,
-    CURRENT_QUERY_TEXT_KEY,
-    LAST_ANSWER_TEXT_KEY,
-    "auradb.currentConversation",
-    "auradb.currentChat",
-    "auradb.lastQuestion",
-    "auradb.lastDocumentId",
-    "auradb.lastDocumentIds",
-    "auradb.last_document_ids",
-    "auradb.loadedDocuments",
-    "auradb.activeDocumentIds"
-  ];
-  const relatedPatterns = [
-    /^auradb\.current/i,
-    /^auradb\.last/i,
-    /^auradb\.loadedDocuments$/i,
-    /^auradb\.activeDocumentIds$/i,
-    /^auradb\.conversation/i
-  ];
-
-  [sessionStorage, localStorage].forEach(function (storage) {
-    try {
-      exactKeys.forEach(function (key) {
-        storage.removeItem(key);
-      });
-      Object.keys(storage).forEach(function (key) {
-        if (key === AUTH_TOKEN_KEY || key === HISTORY_FAVORITES_KEY || key === HISTORY_HIDDEN_IDS_KEY || key === HISTORY_PANEL_OPEN_KEY) {
-          return;
-        }
-        if (relatedPatterns.some(function (pattern) { return pattern.test(key); })) {
-          storage.removeItem(key);
-        }
-      });
-    } catch (err) {}
-  });
+  hardResetStorage();
 }
 
 function startNewChat() {
@@ -1866,26 +2604,10 @@ function startNewChat() {
     answerFeedbackTimeout = null;
   }
   finishAskState();
-
-  currentDocumentId = "";
-  currentDocumentName = "";
-  loadedDocuments = [];
-  chatMessageSeq = 0;
-
-  const fileInput = document.getElementById("file");
-  if (fileInput) fileInput.value = "";
+  resetHardState("Nuevo chat iniciado. Sube uno o varios documentos para consultar.");
+  setUploadMessage("Nuevo chat iniciado. Sube uno o varios documentos para consultar.", false, "ready");
 
   const query = document.getElementById("askQuery");
-  if (query) {
-    query.value = "";
-    query.style.height = "48px";
-  }
-
-  clearCurrentChatStorage();
-  renderCurrentDocumentName();
-  setUploadMessage("Nuevo chat iniciado. Puedes consultar la base de conocimiento o subir un documento.", false, "ready");
-  resetChatThread("Nuevo chat iniciado. Puedes consultar la base de conocimiento o subir un documento.");
-
   if (query) {
     query.focus();
   }
@@ -1935,7 +2657,7 @@ function showAnswerFeedback(message, target) {
 }
 
 async function copyAnswer(answerText, feedbackTarget) {
-  answerText = answerText || sessionStorage.getItem(LAST_ANSWER_TEXT_KEY) || "";
+  answerText = answerText || "";
   if (!answerText) {
     return;
   }
@@ -1948,7 +2670,7 @@ async function copyAnswer(answerText, feedbackTarget) {
 }
 
 function exportAnswer(answerText, question, feedbackTarget) {
-  answerText = answerText || sessionStorage.getItem(LAST_ANSWER_TEXT_KEY) || "";
+  answerText = answerText || "";
   if (!answerText) return;
   const content = (question ? question + "\n\n" : "") + answerText;
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
@@ -2481,17 +3203,11 @@ function transportTopicBullets(text) {
 }
 
 function getFavoriteHistoryIds() {
-  try {
-    return JSON.parse(sessionStorage.getItem(HISTORY_FAVORITES_KEY) || "[]");
-  } catch (err) {
-    return [];
-  }
+  return [];
 }
 
 function setFavoriteHistoryIds(ids) {
-  try {
-    sessionStorage.setItem(HISTORY_FAVORITES_KEY, JSON.stringify(ids));
-  } catch (err) {}
+  return;
 }
 
 function isHistoryFavorite(id) {
@@ -2511,17 +3227,11 @@ function toggleHistoryFavorite(id) {
 }
 
 function getHiddenHistoryIds() {
-  try {
-    return JSON.parse(sessionStorage.getItem(HISTORY_HIDDEN_IDS_KEY) || "[]");
-  } catch (err) {
-    return [];
-  }
+  return [];
 }
 
 function setHiddenHistoryIds(ids) {
-  try {
-    sessionStorage.setItem(HISTORY_HIDDEN_IDS_KEY, JSON.stringify(ids));
-  } catch (err) {}
+  return;
 }
 
 function toggleHistoryMenu(id) {
@@ -2587,6 +3297,7 @@ async function uploadSelectedFile() {
     setUploadMessage(files.length === 1 ? "Procesando documento..." : "Procesando documentos...", false, "processing");
     clearPersistedDocumentState();
     loadedDocuments = [];
+    documentsLoaded = [];
     currentDocumentId = "";
     currentDocumentName = "";
     renderCurrentDocumentName();
@@ -2595,6 +3306,7 @@ async function uploadSelectedFile() {
       const documentId = await uploadSingleFile(file, token);
       if (!explicitMultiDocumentUpload) {
         loadedDocuments = [];
+        documentsLoaded = [];
       }
       addLoadedDocument({ id: documentId, name: file.name });
       currentDocumentId = documentId;
@@ -2606,13 +3318,13 @@ async function uploadSelectedFile() {
       syncCurrentDocumentFromList();
     } else if (loadedDocuments.length) {
       saveLoadedDocuments();
-      try {
-        sessionStorage.setItem(CURRENT_DOCUMENT_ID_KEY, currentDocumentId);
-        sessionStorage.setItem(CURRENT_DOCUMENT_NAME_KEY, currentDocumentName);
-      } catch (err) {}
     }
 
-    renderCurrentDocumentName();
+    renderDocumentChips();
+    loadTagsForLoadedDocuments();
+    if (activeCollectionId) {
+      loadCollections();
+    }
     console.log("active_document_after_upload=" + selectedDocumentIds().join(","));
     setUploadMessage(uploadedCount === 1 ? "Documento listo para consultar" : uploadedCount + " documentos listos para consultar", false, "ready");
 
@@ -2630,6 +3342,9 @@ async function uploadSelectedFile() {
 async function uploadSingleFile(file, token) {
   const formData = new FormData();
   formData.append("file", file);
+  if (activeCollectionId) {
+    formData.append("collection_id", activeCollectionId);
+  }
 
   const res = await fetch(API + "/api/documents/upload", {
     method: "POST",
@@ -2672,12 +3387,24 @@ function addLoadedDocument(documentInfo) {
   if (!id) {
     return;
   }
-  loadedDocuments = loadedDocuments.filter(function (item) {
+  const existing = loadedDocuments.find(function (item) {
+    return item.id === id;
+  }) || {};
+  const nextDocument = {
+    id: id,
+    name: documentInfo.name || existing.name || "Documento cargado",
+    collection_id: documentInfo.collection_id || existing.collection_id || "",
+    is_favorite: typeof documentInfo.is_favorite === "boolean" ? documentInfo.is_favorite : !!existing.is_favorite
+  };
+  const nextDocuments = loadedDocuments.filter(function (item) {
     return item.id !== id;
   });
-  loadedDocuments.push({
-    id: id,
-    name: documentInfo.name || "Documento cargado"
+  nextDocuments.push(nextDocument);
+  documentsLoaded = dedupeDocuments(nextDocuments);
+  syncLoadedDocumentsFromDocumentsLoaded();
+  loadDocumentTags(id).then(function () {
+    renderDocumentChips();
+    renderTagsPanel();
   });
 }
 
@@ -2685,9 +3412,13 @@ function removeLoadedDocument(documentId) {
   loadedDocuments = loadedDocuments.filter(function (item) {
     return item.id !== documentId;
   });
+  documentsLoaded = dedupeDocuments(loadedDocuments);
+  syncLoadedDocumentsFromDocumentsLoaded();
+  delete documentTags[documentId];
   syncCurrentDocumentFromList();
-  renderCurrentDocumentName();
-  setUploadMessage(loadedDocuments.length ? "Documento quitado de la lista." : "Consulta global en la base de conocimiento", false, loadedDocuments.length ? undefined : "ready");
+  renderDocumentChips();
+  renderTagsPanel();
+  setUploadMessage(loadedDocuments.length ? "Documento quitado de la lista." : "Sube uno o varios documentos para consultar.", false, loadedDocuments.length ? undefined : "ready");
 }
 
 function selectedDocumentIds() {
@@ -2696,9 +3427,12 @@ function selectedDocumentIds() {
     .map(function (item) { return (item.getAttribute("data-document-id") || "").trim(); })
     .filter(Boolean) : [];
   if (visibleIds.length) {
-    return visibleIds;
+    return Array.from(new Set(visibleIds));
   }
-  return [];
+  const source = documentsLoaded.length ? documentsLoaded : loadedDocuments;
+  return Array.from(new Set(source.map(function (item) {
+    return (item.id || "").trim();
+  }).filter(Boolean)));
 }
 
 function visibleLoadedDocuments() {
@@ -2718,13 +3452,19 @@ function visibleLoadedDocuments() {
 
 function syncStateFromVisibleDocuments() {
   const visibleDocuments = visibleLoadedDocuments();
-  loadedDocuments = visibleDocuments;
-  if (visibleDocuments.length === 1) {
-    currentDocumentId = visibleDocuments[0].id;
-    currentDocumentName = visibleDocuments[0].name;
-  } else if (visibleDocuments.length > 1) {
-    currentDocumentId = visibleDocuments[0].id;
-    currentDocumentName = visibleDocuments[0].name;
+  if (!visibleDocuments.length && documentsLoaded.length) {
+    syncLoadedDocumentsFromDocumentsLoaded();
+    syncCurrentDocumentFromList();
+    return;
+  }
+  documentsLoaded = dedupeDocuments(visibleDocuments);
+  syncLoadedDocumentsFromDocumentsLoaded();
+  if (loadedDocuments.length === 1) {
+    currentDocumentId = loadedDocuments[0] ? loadedDocuments[0].id : "";
+    currentDocumentName = loadedDocuments[0] ? loadedDocuments[0].name : "";
+  } else if (loadedDocuments.length > 1) {
+    currentDocumentId = loadedDocuments[0].id;
+    currentDocumentName = loadedDocuments[0].name;
   } else {
     currentDocumentId = "";
     currentDocumentName = "";
@@ -2741,6 +3481,8 @@ function clearDocument() {
   currentDocumentId = "";
   currentDocumentName = "";
   loadedDocuments = [];
+  documentsLoaded = [];
+  documentTags = {};
   const fileInput = document.getElementById("file");
   if (fileInput) fileInput.value = "";
 
@@ -2751,9 +3493,15 @@ function clearDocument() {
   clearPersistedQueryState();
 
   renderCurrentDocumentName();
-  setUploadMessage("Consulta global en la base de conocimiento", false, "ready");
+  renderTagsPanel();
+  setUploadMessage("Sube uno o varios documentos para consultar.", false, "ready");
 
   resetChatThread();
+}
+
+function renderDocumentChips() {
+  syncLoadedDocumentsFromDocumentsLoaded();
+  renderCurrentDocumentName();
 }
 
 function renderCurrentDocumentName() {
@@ -2762,8 +3510,9 @@ function renderCurrentDocumentName() {
   if (!container) return;
 
   if (!loadedDocuments.length) {
-    container.textContent = "Consulta global en la base de conocimiento";
+    container.textContent = "Sube uno o varios documentos para consultar.";
     if (list) list.innerHTML = "";
+    updateCollectionStatus();
     return;
   }
 
@@ -2775,6 +3524,30 @@ function renderCurrentDocumentName() {
     const item = document.createElement("span");
     item.className = "document-pill";
     item.setAttribute("data-document-id", documentInfo.id || "");
+
+    const favorite = document.createElement("button");
+    favorite.type = "button";
+    favorite.className = "document-favorite" + (isFavoriteDocument(documentInfo.id) ? " active" : "");
+    favorite.setAttribute("aria-label", isFavoriteDocument(documentInfo.id) ? "Quitar favorito" : "Marcar favorito");
+    favorite.title = isFavoriteDocument(documentInfo.id) ? "Quitar favorito" : "Marcar favorito";
+    favorite.textContent = "★";
+    favorite.onclick = function (event) {
+      event.stopPropagation();
+      toggleDocumentFavorite(documentInfo.id, !isFavoriteDocument(documentInfo.id));
+    };
+    item.appendChild(favorite);
+
+    const addTag = document.createElement("button");
+    addTag.type = "button";
+    addTag.className = "document-tag-add";
+    addTag.title = "Agregar tag";
+    addTag.setAttribute("aria-label", "Agregar tag");
+    addTag.textContent = "+";
+    addTag.onclick = function (event) {
+      event.stopPropagation();
+      addDocumentTag(documentInfo.id);
+    };
+    item.appendChild(addTag);
 
     const name = document.createElement("span");
     name.className = "document-pill-name";
@@ -2792,7 +3565,35 @@ function renderCurrentDocumentName() {
     item.appendChild(remove);
 
     list.appendChild(item);
+    const tags = documentTags[documentInfo.id] || [];
+    if (tags.length) {
+      const tagsWrap = document.createElement("span");
+      tagsWrap.className = "document-tags";
+      tags.forEach(function (tag) {
+        const tagButton = document.createElement("button");
+        tagButton.type = "button";
+        tagButton.className = "document-tag";
+        tagButton.textContent = "#" + tag;
+        tagButton.title = "Cargar documentos con #" + tag;
+        tagButton.onclick = function () {
+          loadDocumentsByTag(tag);
+        };
+        const remove = document.createElement("span");
+        remove.className = "document-tag-remove";
+        remove.textContent = "×";
+        remove.title = "Eliminar tag";
+        remove.onclick = function (event) {
+          event.stopPropagation();
+          removeDocumentTag(documentInfo.id, tag);
+        };
+        tagButton.appendChild(remove);
+        tagsWrap.appendChild(tagButton);
+      });
+      list.appendChild(tagsWrap);
+    }
   });
+  updateCollectionStatus();
+  renderTagsPanel();
 }
 
 function setUploadMessage(message, isError, state) {
@@ -2874,10 +3675,13 @@ async function askDocument() {
       appendChatMessage("assistant", "No hay sesión activa. Inicia sesión de nuevo.");
       return;
     }
-    const globalKnowledgeMode = documentIds.length === 0;
+    const scopedSearchAvailable = !!activeCollectionId || !!activeTagFilter || favoriteDocuments.length > 0;
+    const globalKnowledgeMode = documentIds.length === 0 && !scopedSearchAvailable;
     if (globalKnowledgeMode) {
       console.log("global_knowledge_mode_frontend=true");
-      setUploadMessage("Consulta global en la base de conocimiento", false, "ready");
+      setUploadMessage("Sube uno o varios documentos para consultar.", false, "ready");
+      appendChatMessage("assistant", "Sube uno o varios documentos para consultar.");
+      return;
     }
 
     persistQueryState();
@@ -2894,13 +3698,21 @@ async function askDocument() {
     currentLoadingMessageId = loadingMessageId;
     console.log("visible_documents_before_ask=" + visibleDocumentLogValue().join(","));
     console.log("ask_document_id=" + (documentIds.length === 1 ? documentIds[0] : ""));
-    console.log("ask_document_ids=" + documentIds.join(","));
+    console.log("ask_document_ids", documentIds);
 
     let url = API + "/ask?q=" + encodeURIComponent(question) + "&top_k=3";
     if (documentIds.length > 1) {
       url += "&document_ids=" + encodeURIComponent(documentIds.join(","));
     } else if (documentIds.length === 1) {
       url += "&document_id=" + encodeURIComponent(documentIds[0]);
+    }
+    if (activeCollectionId) {
+      url += "&collection_id=" + encodeURIComponent(activeCollectionId);
+    }
+    if (activeTagFilter) {
+      url += "&tag=" + encodeURIComponent(activeTagFilter);
+    } else if (documentIds.length === 0 && favoriteDocuments.length > 0) {
+      url += "&favorites=true";
     }
     if (documentIds.length === 1) {
       saveCurrentDocument(documentIds[0], currentDocumentName);
@@ -2924,7 +3736,9 @@ async function askDocument() {
       return;
     }
     persistLastAnswer(data.answer || "");
-    loadAskHistory();
+    if (historyPanelOpen) {
+      loadAskHistory();
+    }
   } catch (err) {
     if (err && err.name === "AbortError") {
       if (loadingMessageId && document.getElementById(loadingMessageId)) {
@@ -3161,6 +3975,20 @@ document.getElementById("uploadButton").addEventListener("click", function () {
 
 document.getElementById("file").addEventListener("change", uploadSelectedFile);
 
+const collectionSelect = document.getElementById("collectionSelect");
+if (collectionSelect) {
+  collectionSelect.addEventListener("focus", function () {
+    if (!collections.length) {
+      loadCollections();
+    }
+  });
+  collectionSelect.addEventListener("mousedown", function () {
+    if (!collections.length) {
+      loadCollections();
+    }
+  });
+}
+
 const clearButton = document.getElementById("clearButton");
 if (clearButton) {
   clearButton.addEventListener("click", clearDocument);
@@ -3184,11 +4012,30 @@ document.addEventListener('click', function (event) {
   }
 });
 
-if (getAuthToken()) {
-  showApp();
-} else {
-  showLogin();
+function initCleanPage() {
+  resetHardState();
+  if (getAuthToken()) {
+    showApp();
+  } else {
+    showLogin();
+  }
 }
+
+initCleanPage();
+
+window.addEventListener("load", function () {
+  resetHardState();
+  if (getAuthToken()) {
+    loadFavorites();
+  }
+});
+
+window.addEventListener("pageshow", function () {
+  resetHardState();
+  if (getAuthToken()) {
+    loadFavorites();
+  }
+});
 </script>
 </body>
 </html>

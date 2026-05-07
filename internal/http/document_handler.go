@@ -19,6 +19,7 @@ import (
 	"auradb-pipeline/internal/repository/postgres"
 	"auradb-pipeline/internal/repository/storage"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -41,8 +42,17 @@ type uploadResponse struct {
 	DocumentVersionID string `json:"document_version_id"`
 	JobID             string `json:"job_id"`
 	ObjectKey         string `json:"object_key"`
+	CollectionID      string `json:"collection_id,omitempty"`
 	Message           string `json:"message"`
 	Legacy            string `json:"legacy"`
+}
+
+type favoriteRequest struct {
+	Favorite bool `json:"favorite"`
+}
+
+type tagRequest struct {
+	Tag string `json:"tag"`
 }
 
 func NewDocumentHandler(
@@ -89,6 +99,20 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		log.Printf("upload_error cause=parse_multipart error=%v", err)
 		http.Error(w, "error leyendo multipart", http.StatusBadRequest)
 		return
+	}
+	collectionID := strings.TrimSpace(r.FormValue("collection_id"))
+	if collectionID != "" && h.docRepo != nil {
+		exists, err := h.docRepo.CollectionExists(r.Context(), ipcCtx.TenantID, collectionID)
+		if err != nil {
+			log.Printf("upload_error cause=validate_collection collection_id=%s error=%v", collectionID, err)
+			http.Error(w, "error validando coleccion: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			log.Printf("upload_error cause=collection_not_found collection_id=%s", collectionID)
+			http.Error(w, "coleccion no encontrada", http.StatusBadRequest)
+			return
+		}
 	}
 
 	file, header, err := openUploadFile(r)
@@ -165,6 +189,14 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		log.Printf("upload_error cause=create_document filename=%s object_key=%s error=%v", header.Filename, objectKey, err)
 		http.Error(w, "error creando document: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if collectionID != "" {
+		if err := h.docRepo.AssignDocumentToCollection(r.Context(), ipcCtx.TenantID, documentID, collectionID); err != nil {
+			log.Printf("upload_error cause=assign_collection filename=%s document_id=%s collection_id=%s error=%v", header.Filename, documentID, collectionID, err)
+			http.Error(w, "error asignando coleccion: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		log.Printf("upload_collection_assigned document_id=%s collection_id=%s", documentID, collectionID)
 	}
 
 	documentVersionID, err := h.docRepo.CreateDocumentVersion(
@@ -289,6 +321,7 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		DocumentVersionID: documentVersionID,
 		JobID:             jobID,
 		ObjectKey:         objectKey,
+		CollectionID:      collectionID,
 		Message:           "upload ok",
 		Legacy:            legacyMessage,
 	}
@@ -298,6 +331,219 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("upload_error cause=encode_response filename=%s document_id=%s job_id=%s error=%v", header.Filename, documentID, jobID, err)
 	}
+}
+
+func (h *DocumentHandler) Favorites(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "metodo no permitido", http.StatusMethodNotAllowed)
+		return
+	}
+	ipcCtx, ok := GetIPC(r)
+	if !ok {
+		http.Error(w, "no autorizado", http.StatusUnauthorized)
+		return
+	}
+	if h.docRepo == nil {
+		http.Error(w, "repositorio no inicializado", http.StatusInternalServerError)
+		return
+	}
+
+	favorites, err := h.docRepo.ListFavorites(r.Context(), ipcCtx.TenantID)
+	if err != nil {
+		http.Error(w, "error listando favoritos: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("favorites_loaded count=%d", len(favorites))
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(favorites)
+}
+
+func (h *DocumentHandler) Action(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(strings.Trim(r.URL.Path, "/"), "/favorite") {
+		h.Favorite(w, r)
+		return
+	}
+	if strings.HasSuffix(strings.Trim(r.URL.Path, "/"), "/tags") {
+		h.Tags(w, r)
+		return
+	}
+	http.Error(w, "ruta de documento no encontrada", http.StatusNotFound)
+}
+
+func (h *DocumentHandler) Favorite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "metodo no permitido", http.StatusMethodNotAllowed)
+		return
+	}
+	ipcCtx, ok := GetIPC(r)
+	if !ok {
+		http.Error(w, "no autorizado", http.StatusUnauthorized)
+		return
+	}
+	documentID := documentIDFromFavoritePath(r.URL.Path)
+	log.Printf("favorite_request_received document_id=%s path=%s", documentID, r.URL.Path)
+	if documentID == "" {
+		log.Printf("favorite_update_error document_id=%s error=%s", documentID, "invalid_document_id")
+		http.Error(w, "document_id requerido", http.StatusBadRequest)
+		return
+	}
+
+	var req favoriteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("favorite_update_error document_id=%s error=%v", documentID, err)
+		http.Error(w, "json invalido", http.StatusBadRequest)
+		return
+	}
+	if h.docRepo == nil {
+		log.Printf("favorite_update_error document_id=%s error=%s", documentID, "document_repo_nil")
+		http.Error(w, "repositorio no inicializado", http.StatusInternalServerError)
+		return
+	}
+	if err := h.docRepo.SetFavorite(r.Context(), ipcCtx.TenantID, documentID, req.Favorite); err != nil {
+		log.Printf("favorite_update_error document_id=%s favorite=%t error=%v", documentID, req.Favorite, err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "documento no encontrado", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "error actualizando favorito: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("favorite_update_success document_id=%s favorite=%t", documentID, req.Favorite)
+	log.Printf("favorite_updated document_id=%s favorite=%t", documentID, req.Favorite)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"document_id": documentID,
+		"favorite":    req.Favorite,
+	})
+}
+
+func (h *DocumentHandler) Tags(w http.ResponseWriter, r *http.Request) {
+	ipcCtx, ok := GetIPC(r)
+	if !ok {
+		http.Error(w, "no autorizado", http.StatusUnauthorized)
+		return
+	}
+	documentID := documentIDFromTagsPath(r.URL.Path)
+	if documentID == "" {
+		http.Error(w, "document_id requerido", http.StatusBadRequest)
+		return
+	}
+	if h.docRepo == nil {
+		http.Error(w, "repositorio no inicializado", http.StatusInternalServerError)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		tags, err := h.docRepo.ListDocumentTags(r.Context(), ipcCtx.TenantID, documentID)
+		if err != nil {
+			http.Error(w, "error listando tags: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(tags)
+	case http.MethodPost:
+		var req tagRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "json invalido", http.StatusBadRequest)
+			return
+		}
+		tag := normalizeDocumentTag(req.Tag)
+		if tag == "" {
+			http.Error(w, "tag requerido", http.StatusBadRequest)
+			return
+		}
+		item, err := h.docRepo.AddDocumentTag(r.Context(), ipcCtx.TenantID, documentID, tag)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				http.Error(w, "documento no encontrado", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "error agregando tag: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(item)
+	case http.MethodDelete:
+		tag := normalizeDocumentTag(r.URL.Query().Get("tag"))
+		if tag == "" {
+			var req tagRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			tag = normalizeDocumentTag(req.Tag)
+		}
+		if tag == "" {
+			http.Error(w, "tag requerido", http.StatusBadRequest)
+			return
+		}
+		if err := h.docRepo.DeleteDocumentTag(r.Context(), ipcCtx.TenantID, documentID, tag); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "error eliminando tag: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	default:
+		http.Error(w, "metodo no permitido", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *DocumentHandler) DocumentsByTag(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "metodo no permitido", http.StatusMethodNotAllowed)
+		return
+	}
+	ipcCtx, ok := GetIPC(r)
+	if !ok {
+		http.Error(w, "no autorizado", http.StatusUnauthorized)
+		return
+	}
+	tag := tagFromDocumentsByTagPath(r.URL.Path)
+	if tag == "" {
+		http.Error(w, "tag requerido", http.StatusBadRequest)
+		return
+	}
+	documents, err := h.docRepo.ListDocumentsByTag(r.Context(), ipcCtx.TenantID, tag)
+	if err != nil {
+		http.Error(w, "error listando documentos por tag: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(documents)
+}
+
+func documentIDFromFavoritePath(path string) string {
+	path = strings.Trim(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 3 || parts[0] != "documents" || parts[2] != "favorite" {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
+func documentIDFromTagsPath(path string) string {
+	path = strings.Trim(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 3 || parts[0] != "documents" || parts[2] != "tags" {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
+func tagFromDocumentsByTagPath(path string) string {
+	path = strings.Trim(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 3 || parts[0] != "tags" || parts[2] != "documents" {
+		return ""
+	}
+	return normalizeDocumentTag(parts[1])
+}
+
+func normalizeDocumentTag(tag string) string {
+	tag = strings.TrimSpace(strings.ToLower(tag))
+	tag = strings.TrimPrefix(tag, "#")
+	tag = strings.Join(strings.Fields(tag), "-")
+	return tag
 }
 
 func validateUploadSize(filename string, contentType string, sizeBytes int64) error {

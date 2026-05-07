@@ -3,11 +3,18 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func RunStartupMigrations(ctx context.Context, db *pgxpool.Pool) error {
+	if err := EnsureCollections(ctx, db); err != nil {
+		return err
+	}
+	if err := EnsureDocumentTags(ctx, db); err != nil {
+		return err
+	}
 	if err := EnsureDocumentsColumns(ctx, db); err != nil {
 		return err
 	}
@@ -40,6 +47,8 @@ func EnsureDocumentsColumns(ctx context.Context, db *pgxpool.Pool) error {
 		{name: "processing_status", definition: "TEXT NOT NULL DEFAULT 'uploaded'"},
 		{name: "owner_user_id", definition: "UUID REFERENCES users(id) ON DELETE SET NULL"},
 		{name: "uploaded_at", definition: "TIMESTAMPTZ NOT NULL DEFAULT NOW()"},
+		{name: "collection_id", definition: "UUID REFERENCES collections(id) ON DELETE SET NULL"},
+		{name: "is_favorite", definition: "BOOLEAN NOT NULL DEFAULT false"},
 	}
 
 	for _, column := range columns {
@@ -64,6 +73,16 @@ func EnsureDocumentsColumns(ctx context.Context, db *pgxpool.Pool) error {
 		return fmt.Errorf("actualizando default de documents.status: %w", err)
 	}
 
+	if _, err := db.Exec(ctx, `ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_favorite boolean DEFAULT false`); err != nil {
+		return fmt.Errorf("asegurando columna documents.is_favorite: %w", err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE documents SET is_favorite = false WHERE is_favorite IS NULL`); err != nil {
+		return fmt.Errorf("normalizando documents.is_favorite: %w", err)
+	}
+	if _, err := db.Exec(ctx, `ALTER TABLE documents ALTER COLUMN is_favorite SET DEFAULT false`); err != nil {
+		return fmt.Errorf("actualizando default de documents.is_favorite: %w", err)
+	}
+
 	if _, err := db.Exec(ctx, `
 		UPDATE documents
 		SET original_name = COALESCE(original_name, logical_name),
@@ -79,6 +98,60 @@ func EnsureDocumentsColumns(ctx context.Context, db *pgxpool.Pool) error {
 
 	if _, err := db.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_documents_uploaded_at ON documents(uploaded_at DESC)`); err != nil {
 		return fmt.Errorf("creando indice idx_documents_uploaded_at: %w", err)
+	}
+
+	if _, err := db.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_documents_collection_id ON documents(collection_id)`); err != nil {
+		return fmt.Errorf("creando indice idx_documents_collection_id: %w", err)
+	}
+
+	return nil
+}
+
+func EnsureDocumentTags(ctx context.Context, db *pgxpool.Pool) error {
+	if _, err := db.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS document_tags (
+			id UUID PRIMARY KEY,
+			document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+			tag TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (document_id, tag)
+		)
+	`); err != nil {
+		return fmt.Errorf("creando tabla document_tags: %w", err)
+	}
+	if _, err := db.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_document_tags_document_id ON document_tags(document_id)`); err != nil {
+		return fmt.Errorf("creando indice idx_document_tags_document_id: %w", err)
+	}
+	if _, err := db.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags(tag)`); err != nil {
+		return fmt.Errorf("creando indice idx_document_tags_tag: %w", err)
+	}
+	return nil
+}
+
+func EnsureCollections(ctx context.Context, db *pgxpool.Pool) error {
+	if _, err := db.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS collections (
+			id UUID PRIMARY KEY,
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (tenant_id, name)
+		)
+	`); err != nil {
+		return fmt.Errorf("creando tabla collections: %w", err)
+	}
+
+	if _, err := db.Exec(ctx, `
+		INSERT INTO collections (id, tenant_id, name, created_at)
+		SELECT id, tenant_id, name, created_at
+		FROM document_collections
+		ON CONFLICT (id) DO NOTHING
+	`); err != nil && !strings.Contains(err.Error(), `relation "document_collections" does not exist`) {
+		return fmt.Errorf("migrando document_collections a collections: %w", err)
+	}
+
+	if _, err := db.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_collections_tenant_id ON collections(tenant_id)`); err != nil {
+		return fmt.Errorf("creando indice idx_collections_tenant_id: %w", err)
 	}
 
 	return nil

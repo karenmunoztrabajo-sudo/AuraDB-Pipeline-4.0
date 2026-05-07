@@ -80,6 +80,18 @@ func NewAskHandler(searchService *service.SearchService, searchRepo *postgres.Se
 	}
 }
 
+func parseBoolQuery(value string) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	return value == "1" || value == "true" || value == "yes" || value == "si" || value == "sí"
+}
+
+func normalizeAskTagFilter(tag string) string {
+	tag = strings.TrimSpace(strings.ToLower(tag))
+	tag = strings.TrimPrefix(tag, "#")
+	tag = strings.Join(strings.Fields(tag), "-")
+	return tag
+}
+
 func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	ipcCtx, ok := GetIPC(r)
 	if !ok {
@@ -114,9 +126,19 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 	documentID := strings.TrimSpace(r.URL.Query().Get("document_id"))
 	documentIDs := parseDocumentIDs(r)
+	collectionID := strings.TrimSpace(r.URL.Query().Get("collection_id"))
+	tagFilter := normalizeAskTagFilter(r.URL.Query().Get("tag"))
+	favoriteFilter := parseBoolQuery(r.URL.Query().Get("favorites")) || parseBoolQuery(r.URL.Query().Get("favorite"))
+	collectionMode := collectionID != ""
+	collectionName := ""
+	collectionSummaryMode := collectionMode && isCollectionSummaryQuestion(normalizedQuestionForRetrieval)
+	if collectionSummaryMode {
+		log.Printf("collection_summary_mode=true")
+	}
+	collectionSearchMode := documentID == "" && len(documentIDs) == 0 && (collectionID != "" || favoriteFilter || tagFilter != "")
 	conversationContextUsed := false
 	multiDocumentFollowupMode := false
-	if documentID == "" && len(documentIDs) == 0 && isConversationFollowUpQuestion(question) {
+	if documentID == "" && len(documentIDs) == 0 && collectionID == "" && !favoriteFilter && tagFilter == "" && isConversationFollowUpQuestion(question) {
 		if rememberedDocumentIDs := h.conversationDocumentIDs(ipcCtx.TenantID, ipcCtx.UserID); len(rememberedDocumentIDs) > 0 {
 			documentIDs = rememberedDocumentIDs
 			conversationContextUsed = true
@@ -126,6 +148,86 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 				log.Printf("multi_document_followup_mode=true")
 				log.Printf("followup_document_ids=%s", strings.Join(documentIDs, ","))
 			}
+		}
+	}
+	if favoriteFilter && h.searchRepo != nil {
+		favoriteDocumentIDs, err := h.searchRepo.GetFavoriteDocumentIDs(r.Context(), ipcCtx.TenantID)
+		if err != nil {
+			log.Printf("favorite_document_ids_error error=%v", err)
+			http.Error(w, "error consultando favoritos", http.StatusInternalServerError)
+			return
+		}
+		if documentID != "" {
+			documentIDs = []string{documentID}
+			documentID = ""
+		}
+		if len(documentIDs) > 0 {
+			documentIDs = intersectDocumentIDs(documentIDs, favoriteDocumentIDs)
+		} else {
+			documentIDs = favoriteDocumentIDs
+		}
+		log.Printf("favorite_search_mode=true")
+		if collectionSearchMode {
+			log.Printf("collection_search_mode=true")
+		}
+		log.Printf("collection_documents_found=%d", len(favoriteDocumentIDs))
+	}
+	if tagFilter != "" && h.searchRepo != nil {
+		tagDocumentIDs, err := h.searchRepo.GetDocumentIDsByTag(r.Context(), ipcCtx.TenantID, tagFilter)
+		if err != nil {
+			log.Printf("tag_document_ids_error tag=%s error=%v", tagFilter, err)
+			http.Error(w, "error consultando tag", http.StatusInternalServerError)
+			return
+		}
+		if documentID != "" {
+			documentIDs = []string{documentID}
+			documentID = ""
+		}
+		if len(documentIDs) > 0 {
+			documentIDs = intersectDocumentIDs(documentIDs, tagDocumentIDs)
+		} else {
+			documentIDs = tagDocumentIDs
+		}
+		log.Printf("tag_search_mode=true tag=%s", tagFilter)
+		if collectionSearchMode {
+			log.Printf("collection_search_mode=true")
+		}
+		log.Printf("collection_documents_found=%d", len(tagDocumentIDs))
+	}
+	if collectionID != "" && h.searchRepo != nil {
+		if name, err := h.searchRepo.GetCollectionName(r.Context(), ipcCtx.TenantID, collectionID); err == nil {
+			collectionName = strings.TrimSpace(name)
+		} else {
+			log.Printf("collection_name_error collection_id=%s error=%v", collectionID, err)
+		}
+		collectionDocumentIDs, err := h.searchRepo.GetDocumentIDsByCollectionID(r.Context(), ipcCtx.TenantID, collectionID)
+		if err != nil {
+			log.Printf("collection_document_ids_error collection_id=%s error=%v", collectionID, err)
+			http.Error(w, "error consultando coleccion", http.StatusInternalServerError)
+			return
+		}
+		if documentID != "" {
+			documentIDs = []string{documentID}
+			documentID = ""
+		}
+		if len(documentIDs) > 0 {
+			documentIDs = intersectDocumentIDs(documentIDs, collectionDocumentIDs)
+		} else {
+			documentIDs = collectionDocumentIDs
+		}
+		log.Printf("collection_mode=true")
+		if collectionSearchMode {
+			log.Printf("collection_search_mode=true")
+		}
+		log.Printf("collection_id=%s", collectionID)
+		log.Printf("collection_documents_count=%d", len(collectionDocumentIDs))
+		log.Printf("collection_documents_found=%d", len(collectionDocumentIDs))
+		log.Printf("collection_selected_documents_count=%d", len(documentIDs))
+		if len(documentIDs) == 0 {
+			answer := "La colección seleccionada no tiene documentos para consultar."
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, "", question, answer, "", nil)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, "", question, answer, "", nil, nil)
+			return
 		}
 	}
 	if documentID != "" {
@@ -157,19 +259,41 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		detailedMode = false
 	}
 	globalKnowledgeMode := len(documentIDs) == 0 && strings.TrimSpace(documentID) == ""
-	globalDocumentsScanned := 0
 	log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, len(documentIDs))
 	if globalKnowledgeMode {
-		log.Printf("global_knowledge_mode=true")
-		if h.searchRepo != nil {
-			allTenantChunks, err := h.searchRepo.GetChunksByDocumentIDs(r.Context(), ipcCtx.TenantID, nil)
-			if err != nil {
-				log.Printf("global_knowledge_documents_scan_error=%v", err)
-			} else {
-				globalDocumentsScanned = countUniqueDocumentsInChunks(allTenantChunks)
-				log.Printf("global_knowledge_mode=true documents_scanned=%d", globalDocumentsScanned)
-			}
+		if collectionSearchMode {
+			log.Printf("collection_search_mode=true")
+			log.Printf("collection_documents_found=0")
+			answer := "No encontré documentos para consultar en el alcance seleccionado."
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, "", question, answer, "", nil)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, "", question, answer, "", nil, nil)
+			return
 		}
+		log.Printf("global_knowledge_mode=true")
+		log.Printf("global_knowledge_disabled=true")
+		answer := "Para consultar, sube uno o varios documentos. La búsqueda global histórica está desactivada temporalmente."
+		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, "", question, answer, "", nil)
+		h.writeAskResponse(w, r, ipcCtx.TenantID, "", question, answer, "", nil, nil)
+		return
+	}
+	if collectionSummaryMode {
+		validDocumentIDs, collectionChunks, documentsWithContent, documentsWithoutContent := h.loadValidMultiDocumentChunks(r.Context(), documentIDs)
+		log.Printf("collection_summary_documents_total=%d", len(documentIDs))
+		log.Printf("collection_summary_documents_with_content=%d", documentsWithContent)
+		log.Printf("collection_summary_documents_without_content=%d", documentsWithoutContent)
+		if len(collectionChunks) == 0 {
+			answer := "La colección seleccionada no tiene contenido procesado suficiente para resumir."
+			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(validDocumentIDs, documentID), question, answer, "", nil)
+			h.writeAskResponse(w, r, ipcCtx.TenantID, "", question, answer, "", nil, nil)
+			return
+		}
+		contextChunks := representativeChunksByDocument(collectionChunks)
+		contextText, sources := buildAskContext(contextChunks)
+		answer := h.buildCollectionSummaryAnswer(r.Context(), ipcCtx.TenantID, collectionName, collectionChunks)
+		h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, firstDocumentID(validDocumentIDs, documentID), question, answer, contextText, sources)
+		logDocumentScopedAnswer(firstDocumentID(validDocumentIDs, documentID), "", contextChunks)
+		h.writeAskResponse(w, r, ipcCtx.TenantID, "", question, answer, contextText, contextChunks, sources)
+		return
 	}
 	activeFilename := ""
 	activeChunks := []postgres.SearchResult{}
@@ -424,9 +548,6 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	if detailedMode {
 		requestedTopK = 20
 	}
-	if globalKnowledgeMode {
-		requestedTopK = 20
-	}
 	if multiDocumentMode && requestedTopK > 20 && !summaryOrExplanationMode {
 		requestedTopK = 20
 	}
@@ -503,14 +624,6 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	retrievedChunks = filterChunksByDocumentID(retrievedChunks, documentID)
-	if globalKnowledgeMode {
-		if globalDocumentsScanned == 0 {
-			globalDocumentsScanned = countUniqueDocumentsInChunks(retrievedChunks)
-		}
-		retrievedChunks = limitGlobalKnowledgeChunks(retrievedChunks, 5, 20)
-		log.Printf("global_knowledge_mode=true documents_scanned=%d", globalDocumentsScanned)
-		log.Printf("global_chunks_found=%d", len(retrievedChunks))
-	}
 	log.Printf("multi_document_mode=%t documents_used=%d", multiDocumentMode, countUniqueDocumentsInChunks(retrievedChunks))
 
 	mainEntity := service.MainEntityForQuery(normalizedQuestionForRetrieval)
@@ -531,10 +644,6 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 	if detailedMode && len(contextChunks) > 20 {
 		contextChunks = contextChunks[:20]
-	}
-	if globalKnowledgeMode {
-		contextChunks = limitGlobalKnowledgeChunks(contextChunks, 5, 20)
-		log.Printf("global_knowledge_mode=true documents_scanned=%d documents_used=%d", globalDocumentsScanned, countUniqueDocumentsInChunks(contextChunks))
 	}
 	summaryDirectChunkMode := queryType == "summary" && len(documentIDs) > 0
 	detectedIntent := classifyQuestionIntent(normalizedQuestionForRetrieval)
@@ -587,11 +696,6 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		answer := insufficientProcessedContentAnswer
 		contextText := ""
 		sources := []askSource{}
-		if globalKnowledgeMode {
-			answer = "No encontré información relacionada con esa consulta en la base de conocimiento."
-			log.Printf("global_knowledge_mode=true documents_scanned=%d documents_used=0", globalDocumentsScanned)
-			log.Printf("global_chunks_found=0")
-		}
 		answerLengthMode := answerLengthModeForQueryType(queryType)
 		finalAnswerLineCount := countAnswerLines(answer)
 
@@ -628,16 +732,6 @@ func (h *AskHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	if documentID == "" && len(contextChunks) > 0 {
 		detectedContentType := service.DetectDocumentContentTypeFromChunks(contextChunks)
 		log.Printf("document_type_detected=%s document_id=%s active_filename=%q", detectedContentType, firstDocumentID(documentIDs, documentID), activeFilename)
-	}
-
-	if globalKnowledgeMode {
-		answer := h.buildGlobalKnowledgeAnswer(r.Context(), ipcCtx.TenantID, contextChunks)
-		if strings.TrimSpace(answer) != "" {
-			h.persistAskLog(r, ipcCtx.TenantID, ipcCtx.UserID, "", question, answer, contextText, sources)
-			logDocumentScopedAnswer("", activeFilename, contextChunks)
-			h.writeAskResponse(w, r, ipcCtx.TenantID, activeFilename, question, answer, contextText, contextChunks, sources)
-			return
-		}
 	}
 
 	if multiDocumentMode && chunksLookLikeSpreadsheet(contextChunks) {
@@ -1292,6 +1386,9 @@ func shouldSkipGroundingValidation(answer string) bool {
 	if normalized == "" {
 		return false
 	}
+	if strings.Contains(normalized, "la coleccion") && strings.Contains(normalized, "fuentes") {
+		return true
+	}
 	skipPhrases := []string{
 		service.NormalizeSearchText(insufficientProcessedContentAnswer),
 		service.NormalizeSearchText("No encontré contenido suficiente en este documento para responder con seguridad."),
@@ -1912,10 +2009,19 @@ func sourceLineStartIndex(answer string) int {
 	if strings.HasPrefix(strings.TrimSpace(answer), "Fuente:") {
 		return strings.Index(answer, "Fuente:")
 	}
+	if strings.HasPrefix(strings.TrimSpace(answer), "Fuentes:") {
+		return strings.Index(answer, "Fuentes:")
+	}
 	if idx := strings.LastIndex(answer, "\n\nFuente:"); idx >= 0 {
 		return idx
 	}
+	if idx := strings.LastIndex(answer, "\n\nFuentes:"); idx >= 0 {
+		return idx
+	}
 	if idx := strings.LastIndex(answer, "\nFuente:"); idx >= 0 {
+		return idx
+	}
+	if idx := strings.LastIndex(answer, "\nFuentes:"); idx >= 0 {
 		return idx
 	}
 	return -1
@@ -2516,20 +2622,37 @@ func uppercaseLetterRatio(text string) float64 {
 
 func appendSourcesToAnswer(answer string, sources []askSource) string {
 	answer = polishFinalPresentation(answer, sources)
+	sourceBlock := renderSources(sources)
+	if sourceBlock == "" {
+		return answer
+	}
+
+	body := stripAnswerSourceBlock(answer)
+	if strings.TrimSpace(body) == "" {
+		return sourceBlock
+	}
+	return strings.TrimSpace(body + "\n\n" + sourceBlock)
+}
+
+func renderSources(sources []askSource) string {
 	sourceLabels := orderSourceLabelsForDisplay(answerSourceLabels(sources))
 	if len(sourceLabels) == 0 {
-		return answer
+		return ""
 	}
-	if len(sourceLabels) > 1 {
-		return appendCitedSourcesToAnswer(answer, sourceLabels)
+
+	var builder strings.Builder
+	builder.WriteString("Fuentes:")
+	for i, label := range sourceLabels {
+		if i >= 26 {
+			break
+		}
+		builder.WriteString("\n")
+		builder.WriteString("[")
+		builder.WriteString(string(rune('A' + i)))
+		builder.WriteString("] ")
+		builder.WriteString(cleanDisplayFormatting(label))
 	}
-	if answerHasSourceLine(answer) {
-		return answer
-	}
-	if len(sourceLabels) == 1 {
-		return strings.TrimSpace(answer + "\n\nFuente: " + sourceLabels[0])
-	}
-	return strings.TrimSpace(answer + "\n\nFuente: " + strings.Join(sourceLabels, "; "))
+	return builder.String()
 }
 
 type answerCitation struct {
@@ -2910,6 +3033,100 @@ func (h *AskHandler) buildMultiDocumentOverviewAnswer(ctx context.Context, tenan
 		lines = append(lines, "En conjunto, los documentos cargados reúnen información de "+strconv.Itoa(len(lines))+" archivos consultables.")
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+func isCollectionSummaryQuestion(question string) bool {
+	normalized := service.NormalizeSearchText(question)
+	return containsAnyNormalized(normalized,
+		"que informacion hay en esta coleccion",
+		"qué informacion hay en esta coleccion",
+		"que información hay en esta colección",
+		"resume esta coleccion",
+		"resume esta colección",
+		"que contiene esta coleccion",
+		"qué contiene esta colección",
+	)
+}
+
+func (h *AskHandler) buildCollectionSummaryAnswer(ctx context.Context, tenantID string, collectionName string, chunks []postgres.SearchResult) string {
+	groups := groupChunksByDocument(chunks)
+	if len(groups) == 0 {
+		return ""
+	}
+
+	profiles := h.crossDocumentProfiles(ctx, tenantID, groups)
+	collectionLabel := strings.TrimSpace(collectionName)
+	if collectionLabel == "" {
+		collectionLabel = "seleccionada"
+	}
+
+	lines := make([]string, 0, len(profiles)+3)
+	lines = append(lines, "La colección "+collectionLabel+" contiene "+strconv.Itoa(len(profiles))+" "+pluralizeSpanish("documento", len(profiles))+".")
+	for _, profile := range profiles {
+		lines = append(lines, collectionDocumentSummarySentence(profile))
+	}
+	lines = append(lines, collectionCombinedSummarySentence(profiles))
+	lines = append(lines, collectionSourcesBlock(profiles))
+
+	return cleanDisplayFormatting(strings.Join(lines, "\n\n"))
+}
+
+func collectionDocumentSummarySentence(profile crossDocumentProfile) string {
+	name := cleanDisplayFormatting(profile.Name)
+	topic := collectionDocumentTopic(profile)
+	if profile.Type == "data" {
+		return "El documento " + name + " contiene " + topic + "."
+	}
+	return "El documento " + name + " trata sobre " + topic + "."
+}
+
+func collectionDocumentTopic(profile crossDocumentProfile) string {
+	topic := strings.TrimSpace(profile.Topic)
+	if topic == "" {
+		topic = strings.TrimSpace(profile.Description)
+	}
+	topic = strings.TrimSuffix(topic, ".")
+	topic = removeLeadingDocumentVerb(topic)
+	topic = strings.TrimSuffix(topic, " para análisis")
+	topic = strings.TrimSuffix(topic, ", orientados a consulta y validación")
+	if topic == "" {
+		return "contenido relevante para consulta"
+	}
+	return lowerFirstRune(topic)
+}
+
+func collectionCombinedSummarySentence(profiles []crossDocumentProfile) string {
+	areas := uniqueProfileValues(profiles, func(profile crossDocumentProfile) string { return profile.Area })
+	if containsString(areas, "la historia del transporte") && containsString(areas, "la informática") {
+		return "En conjunto, la colección reúne material académico y técnico útil para consulta y aprendizaje."
+	}
+	if len(areas) > 1 {
+		return "En conjunto, la colección reúne material de distintas áreas útil para consulta, comparación y aprendizaje."
+	}
+	return "En conjunto, la colección reúne material organizado útil para consulta y aprendizaje."
+}
+
+func collectionSourcesBlock(profiles []crossDocumentProfile) string {
+	var builder strings.Builder
+	builder.WriteString("Fuentes:")
+	for i, profile := range profiles {
+		if i >= 26 {
+			break
+		}
+		builder.WriteString("\n")
+		builder.WriteString("[")
+		builder.WriteString(string(rune('A' + i)))
+		builder.WriteString("] ")
+		builder.WriteString(cleanDisplayFormatting(profile.Name))
+	}
+	return builder.String()
+}
+
+func pluralizeSpanish(singular string, count int) string {
+	if count == 1 {
+		return singular
+	}
+	return singular + "s"
 }
 
 type crossDocumentProfile struct {
@@ -3356,6 +3573,20 @@ func groupChunksByDocument(chunks []postgres.SearchResult) map[string][]postgres
 		groups[documentID] = append(groups[documentID], chunk)
 	}
 	return groups
+}
+
+func representativeChunksByDocument(chunks []postgres.SearchResult) []postgres.SearchResult {
+	seen := make(map[string]bool)
+	result := make([]postgres.SearchResult, 0)
+	for _, chunk := range chunks {
+		documentID := strings.TrimSpace(chunk.DocumentID)
+		if documentID == "" || seen[documentID] || strings.TrimSpace(chunk.Content) == "" {
+			continue
+		}
+		seen[documentID] = true
+		result = append(result, chunk)
+	}
+	return result
 }
 
 func documentOverviewDescription(chunks []postgres.SearchResult) string {

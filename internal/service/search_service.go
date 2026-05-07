@@ -61,6 +61,81 @@ func (s *SearchService) Search(ctx context.Context, tenantID string, query strin
 	return s.SearchWithDocumentIDs(ctx, tenantID, query, topK, nil)
 }
 
+func (s *SearchService) GlobalSearch(ctx context.Context, tenantID string, query string) ([]postgres.SearchResult, error) {
+	query = NormalizeQuestionForRetrieval(query)
+	s.logGlobalSearchDiagnostics(ctx, tenantID)
+
+	terms := s.repo.GlobalSearchTerms(query)
+	searchTerm := strings.Join(terms, " ")
+	log.Printf("global_search_started=true")
+	log.Printf("global_search_term=%q", searchTerm)
+	if searchTerm == "" {
+		log.Printf("global_search_level=C")
+		log.Printf("global_chunks_found=0")
+		s.logLatestGlobalChunks(ctx)
+		return nil, nil
+	}
+
+	results := []postgres.SearchResult{}
+	var err error
+	if strings.TrimSpace(tenantID) != "" {
+		log.Printf("global_search_level=A")
+		results, err = s.repo.SearchGlobalChunksByText(ctx, tenantID, searchTerm, 100)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("global_chunks_found=%d", len(results))
+	}
+
+	if len(results) == 0 {
+		log.Printf("global_search_level=B")
+		results, err = s.repo.SearchGlobalChunksByText(ctx, "", searchTerm, 100)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("global_chunks_found=%d", len(results))
+		if len(results) > 0 && strings.TrimSpace(tenantID) != "" {
+			log.Printf("global_tenant_filter_mismatch=true")
+		}
+	}
+
+	if len(results) == 0 {
+		log.Printf("global_search_level=C")
+		log.Printf("global_chunks_found=0")
+		s.logLatestGlobalChunks(ctx)
+		return nil, nil
+	}
+
+	results = limitGlobalSearchResults(results, 5, 20)
+	log.Printf("global_chunks_found=%d", len(results))
+	log.Printf("global_documents_used=%d", countUniqueSearchResultDocuments(results))
+	return results, nil
+}
+
+func (s *SearchService) logGlobalSearchDiagnostics(ctx context.Context, tenantID string) {
+	log.Printf("global_tenant_id=%q", strings.TrimSpace(tenantID))
+	diagnostics, err := s.repo.GetGlobalSearchDiagnostics(ctx)
+	if err != nil {
+		log.Printf("global_diagnostics_error=%v", err)
+		return
+	}
+
+	log.Printf("global_total_documents=%d", diagnostics.TotalDocuments)
+	log.Printf("global_total_chunks=%d", diagnostics.TotalChunks)
+	log.Printf("global_documents_sample=%q", formatGlobalDocumentSamples(diagnostics.Documents))
+	log.Printf("global_chunks_sample=%q", formatGlobalChunkSamples(diagnostics.Chunks))
+}
+
+func (s *SearchService) logLatestGlobalChunks(ctx context.Context) {
+	chunks, err := s.repo.LatestGlobalChunks(ctx, 5)
+	if err != nil {
+		log.Printf("global_latest_chunks_error=%v", err)
+		return
+	}
+	log.Printf("global_latest_chunks_diagnostic_count=%d", len(chunks))
+	log.Printf("global_latest_chunks_diagnostic=%q", formatLatestGlobalChunks(chunks))
+}
+
 func (s *SearchService) GetAllChunksByDocumentID(ctx context.Context, documentID string) ([]postgres.SearchResult, error) {
 	results, err := s.repo.GetChunksByDocumentID(ctx, documentID)
 	if err != nil {
@@ -379,6 +454,95 @@ func countUniqueSearchResultDocuments(chunks []postgres.SearchResult) int {
 		seen[documentID] = true
 	}
 	return len(seen)
+}
+
+func formatGlobalDocumentSamples(samples []postgres.GlobalDocumentSample) string {
+	parts := make([]string, 0, len(samples))
+	for _, sample := range samples {
+		parts = append(parts, strings.Join([]string{
+			strings.TrimSpace(sample.DocumentID),
+			SanitizeSensitiveText(strings.TrimSpace(sample.Name)),
+			strings.TrimSpace(sample.TenantID),
+		}, ","))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func formatGlobalChunkSamples(samples []postgres.GlobalChunkSample) string {
+	parts := make([]string, 0, len(samples))
+	for _, sample := range samples {
+		parts = append(parts, strings.TrimSpace(sample.DocumentID)+","+compactLogPreview(sample.Preview, 120))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func formatLatestGlobalChunks(chunks []postgres.SearchResult) string {
+	parts := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		parts = append(parts, strings.TrimSpace(chunk.DocumentID)+","+compactLogPreview(chunk.Content, 120))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func compactLogPreview(text string, limit int) string {
+	text = strings.Join(strings.Fields(SanitizeSensitiveText(strings.TrimSpace(text))), " ")
+	runes := []rune(text)
+	if limit > 0 && len(runes) > limit {
+		return string(runes[:limit])
+	}
+	return text
+}
+
+func limitGlobalSearchResults(chunks []postgres.SearchResult, maxDocuments int, maxChunks int) []postgres.SearchResult {
+	if len(chunks) == 0 {
+		return nil
+	}
+	if maxDocuments <= 0 {
+		maxDocuments = 5
+	}
+	if maxChunks <= 0 || maxChunks > 20 {
+		maxChunks = 20
+	}
+
+	allowedDocuments := make(map[string]bool)
+	documentOrder := make([]string, 0, maxDocuments)
+	grouped := make(map[string][]postgres.SearchResult)
+	for _, chunk := range chunks {
+		documentID := strings.TrimSpace(chunk.DocumentID)
+		if documentID == "" {
+			continue
+		}
+		if !allowedDocuments[documentID] {
+			if len(allowedDocuments) == maxDocuments {
+				continue
+			}
+			allowedDocuments[documentID] = true
+			documentOrder = append(documentOrder, documentID)
+		}
+		grouped[documentID] = append(grouped[documentID], chunk)
+	}
+
+	selected := make([]postgres.SearchResult, 0, minInt(len(chunks), maxChunks))
+	for _, documentID := range documentOrder {
+		documentChunks := grouped[documentID]
+		if len(documentChunks) == 0 {
+			continue
+		}
+		selected = append(selected, documentChunks[0])
+		if len(selected) == maxChunks {
+			return selected
+		}
+	}
+
+	for _, documentID := range documentOrder {
+		for _, chunk := range grouped[documentID][1:] {
+			if len(selected) == maxChunks {
+				return selected
+			}
+			selected = append(selected, chunk)
+		}
+	}
+	return selected
 }
 
 func (s *SearchService) searchTextFirst(ctx context.Context, tenantID string, query string, topK int, documentIDs []string) ([]postgres.SearchResult, int, error) {

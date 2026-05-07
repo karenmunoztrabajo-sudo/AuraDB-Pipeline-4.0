@@ -34,3 +34,32 @@ func firstDocumentID(documentIDs []string, fallback string) string {
 	}
 	return strings.TrimSpace(fallback)
 }
+
+func intersectDocumentIDs(left []string, right []string) []string {
+	if len(left) == 0 || len(right) == 0 {
+		return nil
+	}
+
+	allowed := make(map[string]bool, len(right))
+	for _, item := range right {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			allowed[item] = true
+		}
+	}
+
+	seen := make(map[string]bool, len(left))
+	result := make([]string, 0, len(left))
+	for _, item := range left {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] || !allowed[item] {
+			continue
+		}
+		seen[item] = true
+		result = append(result, item)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}

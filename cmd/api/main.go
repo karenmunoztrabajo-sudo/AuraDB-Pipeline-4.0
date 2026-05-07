@@ -61,6 +61,7 @@ func main() {
 	auditRepo := postgres.NewAuditRepository(dbPool)
 
 	documentHandler := apphttp.NewDocumentHandler(docRepo, jobRepo, auditRepo, minioRepo, natsRepo)
+	collectionHandler := apphttp.NewCollectionHandler(docRepo)
 
 	searchRepo := postgres.NewSearchRepository(dbPool)
 	embeddingService := service.NewOllamaEmbeddingService(cfg)
@@ -116,6 +117,25 @@ func main() {
 
 	apiUploadProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(documentHandler.Upload))
 	mux.Handle("/api/documents/upload", apiUploadProtected)
+
+	favoritesProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(documentHandler.Favorites))
+	mux.Handle("/documents/favorites", favoritesProtected)
+
+	documentActionProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(documentHandler.Action))
+	mux.Handle("/documents/", documentActionProtected)
+
+	tagDocumentsProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(documentHandler.DocumentsByTag))
+	mux.Handle("/tags/", tagDocumentsProtected)
+
+	collectionsProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(collectionHandler.Collections))
+	mux.Handle("/collections", collectionsProtected)
+
+	collectionAssignProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(collectionHandler.Assign))
+	mux.Handle("/collections/assign", collectionAssignProtected)
+
+	collectionDocumentsProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(collectionHandler.Documents))
+	mux.Handle("/collections/documents", collectionDocumentsProtected)
+	mux.Handle("/collections/", collectionDocumentsProtected)
 
 	searchProtected := apphttp.AuthMiddleware(cfg.JWTSecret)(nethttp.HandlerFunc(searchHandler.Search))
 	mux.Handle("/search", searchProtected)
