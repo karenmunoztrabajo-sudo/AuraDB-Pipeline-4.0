@@ -29,6 +29,11 @@ type assignCollectionRequest struct {
 	DocumentID   string `json:"document_id"`
 }
 
+type collectionListResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 func (h *CollectionHandler) Collections(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -81,9 +86,18 @@ func (h *CollectionHandler) List(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error listando colecciones: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("collections_loaded count=%d tenant_id=%s", len(collections), ipcCtx.TenantID)
+
+	response := make([]collectionListResponse, 0, len(collections))
+	for _, collection := range collections {
+		response = append(response, collectionListResponse{
+			ID:   collection.ID,
+			Name: collection.Name,
+		})
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(collections)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (h *CollectionHandler) Assign(w http.ResponseWriter, r *http.Request) {
